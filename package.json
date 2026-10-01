@@ -1,0 +1,25 @@
+{
+  "name": "webhook-signer",
+  "version": "1.0.0",
+  "description": "CLI-first webhook signing, verification, replay protection, and secret rotation toolkit.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/udiv0313/webhook-signer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/udiv0313/webhook-signer/issues"
+  },
+  "homepage": "https://github.com/udiv0313/webhook-signer#readme",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  }
+}
