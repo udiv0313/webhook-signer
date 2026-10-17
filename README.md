@@ -1,126 +1,160 @@
 # webhook-signer
-CLI-first webhook signing, verification, replay protection, and secret rotation toolkit.
 
-Create webhook endpoints, receive signed webhooks on them, and see exactly what
-happened to each request: what arrived, which verification step passed or
-failed, why, and what the server answered. It comes with:
+Webhook signing, verification, replay protection and secret rotation, with a
+web UI that shows exactly what happened to every request: what arrived, which
+check passed or failed, why, and what the server answered.
 
-- a REST API (native Node.js, no dependencies),
-- a signing CLI,
-- a React web UI for sending test webhooks and inspecting them.
+- **Signed webhooks:** HMAC-SHA256 over `<timestamp>.<raw body>`, one random
+  secret per endpoint (shown once, stored encrypted, rotatable).
+- **Verification in order:** body size → headers → timestamp window →
+  constant-time signature check → replay check. Every outcome is recorded.
+- **Request inspector:** each check marked passed, failed or not checked, with
+  "what happened" and "how to fix it".
+- **Try it in 60 seconds:** a guided demo, plus an `openssl` + `curl` command
+  that signs a webhook from any terminal.
+- **Isolation without sign-up:** each browser gets an anonymous workspace
+  (HttpOnly cookie, 72 hours).
+- **Abuse protection:** rate limits, quotas, body size limit, security headers.
 
-> **Prototype limitations:** all data is stored **in memory** and is lost when
-> the backend restarts. There is **no authentication**. Run it locally only.
-> See [Limitations](#limitations).
+## Tech stack
+
+| Layer | Choice |
+| --- | --- |
+| Backend | Node.js 24 (22.18+ works), native `node:http`, **no npm dependencies** |
+| Storage | SQLite via Node's built-in `node:sqlite` |
+| Crypto | `node:crypto`: HMAC-SHA256, AES-256-GCM, HKDF, `timingSafeEqual` |
+| Frontend | React 19 + Vite |
+| Tests | `node:test` (unit, integration over real HTTP, CLI as a child process) |
+| Deployment | Docker (multi-stage), Fly.io config included |
 
 ## Architecture
 
 ```
-┌─────────────── Browser ───────────────┐
-│  React UI (frontend/, Vite dev server) │      Terminal
-│  never holds a secret                  │      node src/cli/sign.js  (reads .env)
-└───────────────┬───────────────────────┘          │  curl
-                │ /api/* (same origin, proxied by Vite)   │
-                ▼                                     ▼
-┌──────────────────── Backend (src/, port 3000) ─────────────────────┐
-│ server.js     entry point: read config, start listening            │
-│ app.js        routing + error handling                             │
-│ routes/       endpoints, webhooks, events, test sender             │
-│ store/        where endpoints + events are kept (in memory)        │
-│ core/signature.js  HKDF, HMAC-SHA256, timestamp check,             │
-│                    constant-time compare  ← all cryptography here  │
-└─────────────────────────────────────────────────────────────────────┘
+            Browser                                  Any sender
+  React app (same origin as the API)        (Stripe, curl, the signing CLI)
+        │  /api/*  (workspace cookie)                    │ POST /api/webhooks/:id
+        ▼                                                ▼
+┌──────────────────────────── Node.js server (port 3000) ───────────────────────┐
+│ app.js       security headers, rate limits, routing, errors, static web app   │
+│ routes/      endpoints · events · webhooks · test sender · /health            │
+│ workspaces   anonymous cookie → workspace (only a hash of the token is stored) │
+│ core/        signature.js (HMAC, timestamp, replay fingerprint)                │
+│              secrets.js   (random secrets, AES-256-GCM at rest)   ← no I/O     │
+│ store/       SQLite: workspaces, endpoints, events, seen signatures            │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Dependencies only point downward: `server.js → app.js → routes/ → store/, events/, core/`.
-Nothing in `core/` knows about HTTP or storage.
+Dependencies only point downward (`server.js → app.js → routes/ → store/, core/`),
+and `core/` knows nothing about HTTP or storage.
+
+## Folder structure
 
 ```
 src/
-  server.js              entry point (npm start)
-  app.js                 createServer(): route table, error handling
+  server.js              entry point: read config, listen, graceful shutdown
+  app.js                 createServer(): wiring, routing, errors, static files
   config.js              environment variables → settings
-  core/signature.js      signing and verification (pure, no I/O)
-  http/helpers.js        JSON responses, HttpError, body size limit
-  routes/                one file per resource; each exports its routes
-  store/memory-store.js  storage behind a small set of methods
-  events/recording.js    request → stored event, console log
+  workspaces.js          anonymous workspace sessions (cookie)
+  core/                  signature.js, secrets.js: pure crypto, no I/O
+  http/                  helpers, cookies, rate-limit, security-headers, static
+  routes/                endpoints, events, webhooks, test-sender, health, lookups
+  store/                 sqlite-store.js, migrations.js
+  events/recording.js    request → stored event
   lib/                   IDs and time helpers
   cli/sign.js            signing CLI
-tests/
-  unit/                  pure functions (signature)
-  integration/           a real server on a random port
-  cli/                   the CLI run as a child process
-  helpers.js             shared test setup
-frontend/                React + Vite web UI
-docs/                    API reference, frontend, security notes
+frontend/src/            React app: pages/, components/, services/api.js
+tests/                   unit/, integration/, cli/, helpers.js
+docs/                    API reference, security notes, frontend, deployment
+Dockerfile, docker-entrypoint.sh, fly.toml
 ```
 
-| Folder | What it is |
-| --- | --- |
-| `src/` | Backend: API server, signing/verification, CLI (`cli/sign.js`) |
-| `tests/` | Backend tests (`node:test`) |
-| `frontend/` | React + Vite web UI |
-| `docs/` | [API reference](docs/api.md), [frontend](docs/frontend.md), [security notes](docs/security.md) |
+## Local setup
 
-## Backend setup
-
-Requires Node.js 22.18+ or 24.2+. The backend has no dependencies.
+Requires Node.js 22.18+ or 24.2+ and npm.
 
 ```bash
+git clone https://github.com/udiv0313/webhook-signer.git
+cd webhook-signer
 cp .env.example .env
-openssl rand -hex 32
+openssl rand -hex 32          # paste as WEBHOOK_SECRET in .env
+npm --prefix frontend install
 ```
 
-Paste the generated value into `.env` in place of `your_secret_here`, with no
-spaces around `=`. The server refuses to start with the placeholder.
-
-| Variable                      | Default   | Meaning                                                      |
-| ----------------------------- | --------- | ------------------------------------------------------------ |
-| `WEBHOOK_SECRET`              | required  | Master secret. Each endpoint's secret is derived from it     |
-| `WEBHOOK_TOLERANCE_SECONDS`   | `300`     | Allowed distance between webhook timestamp and server clock  |
-| `WEBHOOK_MAX_BODY_SIZE`       | `1048576` | Largest accepted request body, in bytes (1 MB)               |
-| `WEBHOOK_TEST_SENDER_ENABLED` | `false`   | Lets the UI send test webhooks (local requests only). `.env.example` sets it to `true` |
-| `PORT`                        | `3000`    | Port the backend listens on                                  |
-
-## Frontend setup
+**Development** (hot reload, two terminals):
 
 ```bash
-cd frontend
-npm install
+npm start                     # backend on :3000
+npm --prefix frontend run dev # UI on http://localhost:5173 (proxies /api to :3000)
 ```
 
-The defaults work as-is. Optional settings live in `frontend/.env` (copy from
-`frontend/.env.example`). **Every `VITE_*` value is public**: it is bundled into
-the browser JavaScript, so never put a secret there.
-
-## Run both locally
-
-**Terminal 1: backend**
+**Production mode locally** (one port):
 
 ```bash
-npm start
+npm run build && npm start    # http://localhost:3000
 ```
 
-**Terminal 2: frontend**
+## Environment variables
+
+Defaults and explanations are in [`.env.example`](.env.example). Never commit
+`.env`.
+
+| Name | Purpose |
+| --- | --- |
+| `WEBHOOK_SECRET` | **Required.** Master key that encrypts endpoint secrets at rest |
+| `PORT` | Port to listen on |
+| `DATABASE_PATH` | SQLite file location |
+| `WEBHOOK_TOLERANCE_SECONDS` | Allowed clock difference for webhook timestamps |
+| `WEBHOOK_MAX_BODY_SIZE` | Largest accepted request body, in bytes |
+| `WEBHOOK_MAX_EVENTS_PER_ENDPOINT` | Newest events kept per endpoint |
+| `WORKSPACE_TTL_HOURS` | Lifetime of a browser's workspace and its data |
+| `WORKSPACE_MAX_ENDPOINTS` | Endpoints allowed per workspace |
+| `WEBHOOK_TEST_SENDER_ENABLED` | Enables the UI's test sender |
+| `COOKIE_SECURE` | Marks the workspace cookie `Secure` and sends HSTS (HTTPS only) |
+| `TRUST_PROXY` | Takes the client IP from `X-Forwarded-For` (behind one proxy only) |
+| `FRONTEND_DIST` | Folder of the built web app to serve |
+
+Frontend (optional, `frontend/.env`): `VITE_WEBHOOK_BASE_URL` (public, display
+only) and `API_PROXY_TARGET` (dev proxy only).
+
+## Scripts
+
+| Command | What it does |
+| --- | --- |
+| `npm start` | Start the server (reads `.env` if present) |
+| `npm test` | Run all backend tests |
+| `npm run build` | Install frontend dependencies and build `frontend/dist` |
+| `npm --prefix frontend run dev` | Frontend dev server with hot reload |
+| `node src/cli/sign.js '<body>'` | Print signed headers (needs `WEBHOOK_ENDPOINT_SECRET`) |
+
+## Docker
 
 ```bash
-cd frontend
-npm run dev
+docker build -t webhook-signer .
+docker run --rm -p 3000:3000 \
+  -e WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+  -e WEBHOOK_TEST_SENDER_ENABLED=true \
+  -v webhook-data:/data \
+  webhook-signer
 ```
 
-Open **http://localhost:5173**.
+Open http://localhost:3000. The image is multi-stage on a pinned
+`node:24.9.0-bookworm-slim`, runs the server as the unprivileged `node` user,
+exposes only port 3000, and has a `HEALTHCHECK` on `GET /health`. Keep the same
+`WEBHOOK_SECRET` across restarts, or stored endpoint secrets become unreadable.
 
-The browser only talks to the Vite dev server (port 5173), which forwards
-`/api/*` to the backend (port 3000). Same origin, so no CORS is needed.
+## Deployment
 
-**Terminal 3 (optional): tests**
-
-```bash
-npm test
-```
+One process, one persistent volume for SQLite, HTTPS in front. Behind HTTPS set
+`COOKIE_SECURE=true`; behind one reverse proxy set `TRUST_PROXY=true`. Run
+exactly one instance (SQLite and the in-memory rate limits are per process).
+Step-by-step guide (Fly.io config included): [docs/deploy.md](docs/deploy.md).
 
 ## Using the dashboard
+
+**Try it in 60 seconds** (top of the Endpoints page) creates a demo endpoint and
+walks through four steps: a valid webhook, a tampered one, why it was rejected,
+and a replay. It also shows an `openssl` + `curl` command that signs a webhook
+from any terminal, without this project.
 
 1. **Endpoints** lists every endpoint with its status, webhook URL, and number
    of recent events. Click one to open it.
@@ -175,7 +209,9 @@ not claim it was valid.
 | POST   | `/api/webhooks/:endpointId`               | Receive a signed webhook                        |
 | GET    | `/api/endpoints/:endpointId/events`       | Recent events for an endpoint (summaries)       |
 | GET    | `/api/events/:eventId`                    | Full details of one event                       |
-| POST   | `/api/endpoints/:endpointId/test-webhooks`| Server-signed test webhook (local, opt-in)      |
+| POST   | `/api/endpoints/:endpointId/rotate-secret`| Replace the signing secret (shown once)        |
+| POST   | `/api/endpoints/:endpointId/test-webhooks`| Server-signed test webhook (own endpoints, opt-in) |
+| GET    | `/health`                                 | Health check for the hosting platform           |
 
 Every error has the same shape:
 
@@ -195,16 +231,22 @@ X-Webhook-Signature: sha256=<64 hex characters>
 ```
 
 ```
-endpoint secret = HKDF-SHA256(WEBHOOK_SECRET, "webhook-signer:endpoint:" + endpointId)
+endpoint secret = "whsec_" + 32 random bytes (base64url), shown once when the endpoint is created
 signed message  = <timestamp> + "." + <raw request body bytes>
 signature       = "sha256=" + hex( HMAC-SHA256(endpoint secret, signed message) )
 ```
+
+The HMAC key is the whole secret string, `whsec_` included. The server stores it
+encrypted (AES-256-GCM, key derived from `WEBHOOK_SECRET`). Rotating a secret
+(UI button or `POST /api/endpoints/:id/rotate-secret`) shows a new one, once,
+and the old one stops working immediately.
 
 The server checks, in order, and stops at the first failure:
 
 | # | Check                                                     | If it fails                             |
 | - | --------------------------------------------------------- | --------------------------------------- |
 | 0 | Endpoint ID is valid and exists                           | 400 `INVALID_ENDPOINT_ID` / 404 `ENDPOINT_NOT_FOUND` |
+| 0 | Endpoint is under its rate limit (120/minute)             | 429 `RATE_LIMITED` (not recorded)      |
 | 0 | Body is not larger than `WEBHOOK_MAX_BODY_SIZE`           | 413 `PAYLOAD_TOO_LARGE` (not verified)  |
 | 1 | `X-Webhook-Timestamp` is present                          | 400 `MISSING_TIMESTAMP`                 |
 | 2 | Timestamp is Unix seconds (1–10 digits)                   | 400 `MALFORMED_TIMESTAMP`               |
@@ -213,28 +255,38 @@ The server checks, in order, and stops at the first failure:
 | 5 | Timestamp is not older than the tolerance                 | 401 `TIMESTAMP_TOO_OLD`                 |
 | 6 | Timestamp is not further in the future than the tolerance | 401 `TIMESTAMP_IN_FUTURE`               |
 | 7 | HMAC of `<timestamp>.<body>` matches (constant-time)      | 401 `INVALID_SIGNATURE`                 |
+| 8 | This exact request was not already accepted              | 409 `REPLAY_DETECTED`                   |
 |   | All checks pass                                           | 200 `{"received":true,"eventId":"…"}`   |
 
 **Why the timestamp:** HMAC proves who sent a request and that it was not
 changed, but not *when*. A captured request replayed later is an exact copy, so
 its signature is still valid. Because the timestamp is part of the signed
 message, it cannot be refreshed without the secret, and the server rejects
-timestamps outside the tolerance window. A replay *within* the window is still
-accepted (see Limitations).
+timestamps outside the tolerance window.
+
+**Why check 8:** a replay *within* the window passes checks 1–7. So the server
+remembers a fingerprint (sha256) of every accepted signature until its
+timestamp leaves the window, and refuses a second delivery of the same request.
+Senders must therefore sign every delivery, retries included, with a fresh
+timestamp.
 
 ## Sending webhooks from the terminal
 
 With the backend running:
 
 ```bash
-# Create an endpoint and keep its ID
-ENDPOINT_ID=$(curl -s -X POST http://localhost:3000/api/endpoints \
-  -H "Content-Type: application/json" -d '{"name":"Stripe Payments"}' \
-  | grep -o 'ep_[0-9a-f]\{16\}' | head -1)
+# Create an endpoint. -c/-b keep the workspace cookie, like a browser would.
+curl -s -c /tmp/jar -b /tmp/jar -X POST http://localhost:3000/api/endpoints \
+  -H "Content-Type: application/json" -d '{"name":"Stripe Payments"}' > /tmp/endpoint.json
 
-# Sign a payload with the CLI (reads WEBHOOK_SECRET from .env)
+# Keep its ID and its secret (the secret is only in this one response)
+ENDPOINT_ID=$(node -p 'require("/tmp/endpoint.json").id')
+export WEBHOOK_ENDPOINT_SECRET=$(node -p 'require("/tmp/endpoint.json").secret')
+rm /tmp/endpoint.json
+
+# Sign a payload with the CLI (reads WEBHOOK_ENDPOINT_SECRET)
 BODY='{"event":"payment.success","amount":4999}'
-node --env-file=.env src/cli/sign.js --endpoint=$ENDPOINT_ID "$BODY" > /tmp/webhook-headers.txt
+node src/cli/sign.js "$BODY" > /tmp/webhook-headers.txt
 
 # Valid webhook → 200
 curl -i -X POST http://localhost:3000/api/webhooks/$ENDPOINT_ID \
@@ -246,13 +298,13 @@ curl -s -X POST http://localhost:3000/api/webhooks/$ENDPOINT_ID \
 
 # Expired timestamp → 401 TIMESTAMP_TOO_OLD
 OLD_TIMESTAMP=$(( $(date +%s) - 600 ))
-node --env-file=.env src/cli/sign.js --endpoint=$ENDPOINT_ID --timestamp=$OLD_TIMESTAMP "$BODY" > /tmp/webhook-old-headers.txt
+node src/cli/sign.js --timestamp=$OLD_TIMESTAMP "$BODY" > /tmp/webhook-old-headers.txt
 curl -s -X POST http://localhost:3000/api/webhooks/$ENDPOINT_ID \
   -H @/tmp/webhook-old-headers.txt --data-binary "$BODY"
 
-# Inspect what happened
-curl -s http://localhost:3000/api/endpoints/$ENDPOINT_ID/events
-curl -s http://localhost:3000/api/events/<eventId from a response above>
+# Inspect what happened (needs the workspace cookie)
+curl -s -b /tmp/jar http://localhost:3000/api/endpoints/$ENDPOINT_ID/events
+curl -s -b /tmp/jar http://localhost:3000/api/events/<eventId from a response above>
 ```
 
 Use `--data-binary`, not `-d`: `-d` can change the body (for example, strip
@@ -269,25 +321,24 @@ recorded (with `body: null`) so it can be inspected.
 
 ## Limitations
 
-- **In-memory storage.** Endpoints and events are lost when the backend
-  restarts. Old endpoint IDs then return `404 ENDPOINT_NOT_FOUND`; the UI tells
-  you to create the endpoint again.
-- **Only the 100 most recent events** (across all endpoints) are kept.
-- **No authentication.** Anyone who can reach the backend can create endpoints
-  and read events, including webhook bodies.
-- **Test sender is a signing oracle.** It can make the server sign anything, so
-  it is off by default, local-only, and JSON-only. Keep
-  `WEBHOOK_TEST_SENDER_ENABLED=false` anywhere other people can reach the server.
-- **One master secret.** Whoever holds `WEBHOOK_SECRET` can sign for every
-  endpoint. A multi-tenant service would issue each customer a random secret.
-- **Replays within the tolerance window** are still accepted. Stopping them
-  needs persistent storage of processed event IDs.
-- **No live updates.** The UI refreshes events after a test webhook or when you
-  click Refresh; webhooks sent from the terminal appear after a refresh.
-- **Development setup only.** The frontend runs on the Vite dev server with a
-  proxy. A production deployment would serve the built frontend from the same
-  origin as the API.
-- **Single process.** Several backend instances would each have separate memory.
+- **Anonymous workspaces, no accounts.** Data belongs to a browser cookie. A
+  different browser, a private window, or cleared cookies means a new, empty
+  workspace. Workspaces and their data are deleted 72 hours after creation.
+- **Only the 50 newest events per endpoint** are kept.
+- **Rate limits are in memory.** They reset on restart, and several server
+  processes would each count separately. Limits: 300 requests/minute per IP,
+  10 new endpoints/hour per IP, 20 endpoints per workspace, 120 webhooks/minute
+  per endpoint, 30 test webhooks/minute and 10 rotations/hour per workspace.
+- **Rotation has no overlap.** The old secret stops working at once, so senders
+  must switch immediately. Real providers accept both for a while.
+- **`WEBHOOK_SECRET` decrypts every endpoint secret.** Keep it out of the
+  database's backups. Changing it makes stored secrets unreadable (rotate them).
+- **Live updates poll.** The endpoint page checks for new events every 4
+  seconds while the tab is visible (no WebSockets).
+- **Single process.** SQLite is one file on one machine, and rate limits are in
+  memory; several backend instances would need a shared database and store.
+- **Deployment files are untested here.** The Dockerfile and `fly.toml` were
+  written without Docker available; see the checklist in docs/deploy.md.
 
 ## Troubleshooting
 
@@ -295,11 +346,16 @@ recorded (with `body: null`) so it can be inspected.
   `npm start` in the project root.
 - **`403 TEST_SENDER_DISABLED`**: set `WEBHOOK_TEST_SENDER_ENABLED=true` in
   `.env` and restart the backend.
-- **`404 ENDPOINT_NOT_FOUND` after a restart**: memory was cleared. Create the
-  endpoint again.
+- **`404 ENDPOINT_NOT_FOUND` in the UI**: the endpoint belongs to another
+  browser's workspace, or your workspace expired (72 hours). Create it again.
 - **`401 INVALID_SIGNATURE` you did not expect**: the body changed after
-  signing, the wrong `--endpoint` was used, or the CLI and server use different
-  `WEBHOOK_SECRET` values. Restart the backend after editing `.env`.
+  signing, `WEBHOOK_ENDPOINT_SECRET` holds another endpoint's secret, or the
+  secret was rotated since you copied it.
+- **`429 RATE_LIMITED`**: wait the number of seconds in `Retry-After`.
+- **`409 REPLAY_DETECTED`**: the same signed request was sent twice. Sign again
+  (new timestamp) for every delivery.
+- **`500` with "Cannot decrypt the signing secret" in the server log**:
+  `WEBHOOK_SECRET` changed. Rotate that endpoint's secret.
 - **`401 TIMESTAMP_TOO_OLD` on a fresh request**: clocks differ, or a header file
   older than 5 minutes was reused. Re-run the CLI.
 - **`400 MALFORMED_TIMESTAMP`**: usually milliseconds were sent instead of

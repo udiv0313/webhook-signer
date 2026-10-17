@@ -3,8 +3,9 @@
 Base URL (local): `http://localhost:3000`
 
 All requests and responses use JSON, except webhook bodies, which are treated as
-raw signed bytes. All data is kept **in memory** and is lost when the server
-restarts. There is no authentication on these routes (prototype only).
+raw signed bytes. Data is stored in SQLite (`DATABASE_PATH`) and survives
+restarts. There are no accounts: each browser gets an anonymous **workspace**
+(see below), and can only see its own endpoints and events.
 
 ## Conventions
 
@@ -21,6 +22,27 @@ restarts. There is no authentication on these routes (prototype only).
 Webhook responses also include a top-level `eventId`, so a sender can look up
 its own request.
 
+### Workspaces
+
+- The first successful `POST /api/endpoints` without a valid workspace cookie
+  creates a workspace and sets it:
+
+  ```
+  Set-Cookie: ws=<43 random base64url characters>; Path=/; Max-Age=259200; HttpOnly; SameSite=Lax
+  ```
+
+  `Secure` is added when `COOKIE_SECURE=true`. Browsers send the cookie back
+  automatically on same-origin requests.
+- A workspace lives `WORKSPACE_TTL_HOURS` (default 72) from creation and is never
+  extended. After that its cookie is ignored and its endpoints and events are
+  deleted.
+- Requests without a valid cookie create nothing: `GET /api/endpoints` returns an
+  empty list and every other management route returns `404`.
+- **Another workspace's endpoint or event returns the same `404` as one that
+  does not exist**, so IDs cannot be probed.
+- `POST /api/webhooks/:endpointId` needs **no** cookie: external senders call it,
+  and the endpoint ID in the URL is the address.
+
 ### Errors that can happen on any route
 
 | Status | Code                 | When                                                        |
@@ -28,15 +50,17 @@ its own request.
 | 404    | `ROUTE_NOT_FOUND`    | No route matches the path                                   |
 | 405    | `METHOD_NOT_ALLOWED` | The path exists but not for this method. `Allow` header lists valid methods |
 | 413    | `PAYLOAD_TOO_LARGE`  | Body larger than `WEBHOOK_MAX_BODY_SIZE` (default 1 MB)     |
+| 429    | `RATE_LIMITED`       | More than 300 requests per minute from one IP. `Retry-After` says how many seconds to wait |
 | 500    | `INTERNAL_ERROR`     | Unexpected server bug. Details go to the server console only |
 
 ---
 
 ## POST /api/endpoints
 
-**Purpose:** create a webhook endpoint. Each endpoint gets its own signing
-secret, derived from `WEBHOOK_SECRET` and the endpoint ID. The secret is never
-returned.
+**Purpose:** create a webhook endpoint with its own random signing secret.
+**This response is the only time the secret is returned**; afterwards it can
+only be replaced (see rotate-secret). Limited to 10 per hour per IP, and 20
+endpoints per workspace.
 
 **Request headers:** `Content-Type: application/json`
 
@@ -57,7 +81,8 @@ returned.
   "status": "active",
   "createdAt": "2026-10-11T10:21:24.000Z",
   "webhookPath": "/api/webhooks/ep_85a64db45372ea34",
-  "recentEventCount": 0
+  "recentEventCount": 0,
+  "secret": "whsec_EXAMPLE000000000000000000000000000000000000"
 }
 ```
 
@@ -65,6 +90,8 @@ returned.
 
 | Status | Code               | When                                   |
 | ------ | ------------------ | -------------------------------------- |
+| 403    | `ENDPOINT_LIMIT_REACHED` | The workspace already has the maximum number of endpoints |
+| 429    | `RATE_LIMITED`     | Too many endpoints created from this IP |
 | 400    | `INVALID_JSON`     | Body is not valid JSON (or is empty)   |
 | 400    | `VALIDATION_ERROR` | `name` missing, empty, not a string, or longer than 100 characters |
 | 413    | `PAYLOAD_TOO_LARGE`| Body too large                         |
@@ -73,7 +100,8 @@ returned.
 
 ## GET /api/endpoints
 
-**Purpose:** list all endpoints, in creation order. Secrets are never included.
+**Purpose:** list the caller's endpoints, in creation order. Secrets are never
+included. Without a workspace cookie the list is empty.
 
 **Request headers / body:** none
 
@@ -101,6 +129,22 @@ this endpoint.
 
 ---
 
+## GET /health
+
+**Purpose:** health check for the hosting platform and uptime monitors. Not
+under `/api`, never rate limited, no cookie needed.
+
+**Success: `200 OK`**
+
+```json
+{ "status": "ok", "checks": { "database": "ok" }, "uptimeSeconds": 3600 }
+```
+
+**`503 Service Unavailable`** with `"status": "error"` and
+`"database": "unavailable"` when the database cannot be queried.
+
+---
+
 ## POST /api/webhooks/:endpointId
 
 **Purpose:** receive a signed webhook for one endpoint. The request is verified
@@ -114,7 +158,9 @@ this endpoint.
 | `X-Webhook-Signature` | `sha256=` + hex HMAC-SHA256 of `<timestamp>.<raw body>`, using the endpoint's secret |
 | `Content-Type`        | Optional. Recorded for debugging, not required         |
 
-Use `node --env-file=.env src/cli/sign.js --endpoint=<id> '<body>'` to generate both headers.
+Use `WEBHOOK_ENDPOINT_SECRET='whsec_...' node src/cli/sign.js '<body>'` to generate both headers.
+Limited to 120 requests per minute per endpoint; refused requests get `429` and
+are not recorded.
 
 **Request body:** any bytes (usually JSON). It is verified exactly as sent and
 never parsed, so it does not have to be JSON.
@@ -138,6 +184,7 @@ never parsed, so it does not have to be JSON.
 | 401    | `TIMESTAMP_TOO_OLD`   | Older than `WEBHOOK_TOLERANCE_SECONDS`                |
 | 401    | `TIMESTAMP_IN_FUTURE` | Further in the future than the tolerance             |
 | 401    | `INVALID_SIGNATURE`   | HMAC does not match (wrong secret, changed body or timestamp) |
+| 409    | `REPLAY_DETECTED`     | This exact request (same timestamp, body and signature) was already accepted. Recorded as an event |
 | 413    | `PAYLOAD_TOO_LARGE`   | Body too large. Recorded, but never verified          |
 
 Example error:
@@ -184,14 +231,15 @@ summaries; use `GET /api/events/:eventId` for full details.
 `eventType` is the `event` (or `type`) field of a JSON body, for display only.
 It is `null` when the body is not JSON or has no such string field.
 
-Only the 100 most recent events (across all endpoints) are kept.
+Each endpoint keeps only its newest `WEBHOOK_MAX_EVENTS_PER_ENDPOINT` events
+(default 50). Older ones are deleted; other endpoints are never affected.
 
 **Errors**
 
 | Status | Code                  | When                               |
 | ------ | --------------------- | ---------------------------------- |
 | 400    | `INVALID_ENDPOINT_ID` | ID is not `ep_` + 16 hex characters |
-| 404    | `ENDPOINT_NOT_FOUND`  | No endpoint with this ID           |
+| 404    | `ENDPOINT_NOT_FOUND`  | No endpoint with this ID in your workspace |
 
 ---
 
@@ -254,22 +302,48 @@ Field notes:
 | Status | Code               | When                                |
 | ------ | ------------------ | ----------------------------------- |
 | 400    | `INVALID_EVENT_ID` | ID is not `evt_` + 16 hex characters |
-| 404    | `EVENT_NOT_FOUND`  | No such event (or it was evicted)   |
+| 404    | `EVENT_NOT_FOUND`  | No such event in your workspace (or it was deleted) |
+
+---
+
+## POST /api/endpoints/:endpointId/rotate-secret
+
+**Purpose:** replace an endpoint's signing secret. Returns the new secret, once.
+The old secret stops working immediately. Only for the caller's own endpoints;
+limited to 10 per hour per workspace.
+
+**Request body:** none
+
+**Success: `200 OK`**
+
+```json
+{ "secret": "whsec_EXAMPLE000000000000000000000000000000000000" }
+```
+
+**Errors**
+
+| Status | Code                  | When                                       |
+| ------ | --------------------- | ------------------------------------------ |
+| 400    | `INVALID_ENDPOINT_ID` | ID is not `ep_` + 16 hex characters        |
+| 404    | `ENDPOINT_NOT_FOUND`  | No endpoint with this ID in your workspace |
+| 429    | `RATE_LIMITED`        | Too many rotations                         |
 
 ---
 
 ## POST /api/endpoints/:endpointId/test-webhooks
 
-**Purpose:** send a test webhook to an endpoint without knowing its secret. The
-server signs the payload itself and delivers it **over real HTTP to its own**
+**Purpose:** send a test webhook to an endpoint without having its secret at
+hand. The server signs the payload with the endpoint's secret and delivers it **over real HTTP to its own**
 `POST /api/webhooks/:endpointId`, so the test goes through exactly the same
 size limit, verification, and event recording as an external webhook. This is
 what the web UI's "Send test webhook" uses.
 
-Because this route can make the server sign anything, it is guarded:
+Because this route makes the server sign with an endpoint's secret, it is guarded:
 
 - **Off by default.** Enabled only with `WEBHOOK_TEST_SENDER_ENABLED=true`.
-- **Local only.** Requests must come from `127.0.0.1` / `::1`.
+- **Own endpoints only.** The endpoint must belong to the caller's workspace.
+  The caller already received that secret, so the route reveals nothing new.
+- **Rate limited.** 30 per minute per workspace.
 - **JSON only.** `Content-Type: application/json` is required. Browsers cannot
   send that cross-site without a CORS preflight, which this server never
   approves, so a malicious web page cannot trigger it.
@@ -296,6 +370,7 @@ Because this route can make the server sign anything, it is guarded:
 | `expired_timestamp`   | Signs correctly with a timestamp 60 s past the tolerance | 401 `TIMESTAMP_TOO_OLD` |
 | `missing_signature`   | Leaves out `X-Webhook-Signature`                       | 401 `MISSING_SIGNATURE`   |
 | `malformed_timestamp` | Sends the timestamp in milliseconds                    | 400 `MALFORMED_TIMESTAMP` |
+| `replay`              | Sends the same correctly signed request twice; reports the second | 409 `REPLAY_DETECTED` |
 
 Test requests are recorded like any other event, with
 `user-agent: webhook-signer-test-sender`.
@@ -323,10 +398,10 @@ No secret and no full signature is ever returned.
 | Status | Code                     | When                                                    |
 | ------ | ------------------------ | ------------------------------------------------------- |
 | 403    | `TEST_SENDER_DISABLED`   | `WEBHOOK_TEST_SENDER_ENABLED` is not `true`             |
-| 403    | `TEST_SENDER_LOCAL_ONLY` | Request did not come from this machine                  |
 | 400    | `INVALID_ENDPOINT_ID`    | ID is not `ep_` + 16 hex characters                     |
-| 404    | `ENDPOINT_NOT_FOUND`     | No endpoint with this ID                                |
+| 404    | `ENDPOINT_NOT_FOUND`     | No endpoint with this ID in your workspace              |
 | 415    | `UNSUPPORTED_MEDIA_TYPE` | `Content-Type` is not `application/json`                |
 | 400    | `INVALID_JSON`           | Body is not valid JSON                                  |
 | 400    | `VALIDATION_ERROR`       | `payload` is not a string, or `scenario` is unknown     |
+| 429    | `RATE_LIMITED`           | Too many test webhooks from this workspace              |
 | 502    | `TEST_DELIVERY_FAILED`   | The server could not reach its own webhook route        |

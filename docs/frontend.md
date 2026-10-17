@@ -13,13 +13,17 @@ frontend/src/
 ├── main.jsx                 mounts <App />
 ├── App.jsx                  which page is shown (plain React state)
 ├── config.js                public display config (VITE_WEBHOOK_BASE_URL)
+├── terminal.js              openssl + curl commands that sign a webhook
 ├── diagnostics.js           verification code → checklist + "what happened / how to fix"
 ├── services/api.js          the ONLY file that calls fetch()
 ├── pages/
-│   ├── DashboardPage.jsx    endpoint table
+│   ├── DashboardPage.jsx    "Try it in 60 seconds" + endpoint table
 │   ├── CreateEndpointPage.jsx
 │   └── EndpointPage.jsx     details + tester + event list + inspector
 └── components/
+    ├── TryItPanel.jsx       one-click guided demo (creates an endpoint)
+    ├── DemoGuide.jsx        the demo's steps: valid, tampered, inspect, replay
+    ├── SecretReveal.jsx     a secret shown once, with Copy
     ├── WebhookTester.jsx    payload + scenario → POST test-webhooks
     ├── EventList.jsx        clickable event rows
     ├── RequestInspector.jsx request → verification → response
@@ -106,8 +110,9 @@ text ("HTTP 401 Unauthorized", "Rejected", "Not checked").
 
 ## The webhook tester
 
-The browser cannot sign a webhook, because signing needs the endpoint's secret.
-So the tester sends the **payload text and a scenario** to the backend:
+The tester does not use the endpoint's secret (the page does not keep it). It
+sends the **payload text and a scenario** to the backend, which signs with the
+secret it stores:
 
 ```
 POST /api/endpoints/:id/test-webhooks
@@ -123,8 +128,38 @@ was sent"), and the webhook's own status (200, 401, 400…) is inside
 `response.status`. A `403` or `404` from the tester means the test was **not**
 sent.
 
-The tester also shows the equivalent terminal commands (CLI + curl), which read
-the secret from `.env` on your machine, never from the browser.
+The tester also shows the equivalent terminal commands (CLI + curl). You paste
+the endpoint's secret into `WEBHOOK_ENDPOINT_SECRET` yourself.
+
+## Live updates
+
+The endpoint page checks for new events every 4 seconds, but only while the tab
+is visible (switching back to the tab checks at once). Webhooks sent from a
+terminal or another service appear without clicking Refresh. If a check fails,
+the header shows "Live updates paused" instead of "Live", and the next
+successful check resumes it. The list is only re-rendered when something
+changed.
+
+## Try it in 60 seconds
+
+The dashboard's first card creates an endpoint and opens it with a guide. Each
+step calls the real test sender, so every result is a real webhook through the
+real verification: valid (200), tampered body (401), open the rejected event in
+the inspector, replay (409). The guide also shows the endpoint's secret (it was
+just created) and an `openssl` + `curl` command with that secret filled in,
+so a visitor can send a signed webhook from their own terminal.
+
+## The signing secret: shown once
+
+The API returns an endpoint's secret only when it is created or rotated:
+
+- **Create endpoint** shows the secret with a Copy button. Leaving the page is
+  disabled until "I have saved the signing secret" is ticked, because the secret
+  cannot be shown again.
+- **Rotate secret** (endpoint page) asks for confirmation (the old secret stops
+  working at once), then shows the new secret until you hide it.
+
+The secret is held only in React state while it is on screen.
 
 ## Why secrets stay on the backend
 
@@ -133,13 +168,15 @@ bundle, network responses, storage, and the URL. So:
 
 - No secret is in the frontend source, the bundle, `localStorage`,
   `sessionStorage`, URLs, or logs. The frontend has no `console.log` calls.
+  A newly created or rotated endpoint secret is displayed once and then
+  dropped from memory.
 - `VITE_*` variables are compiled into the JavaScript and are **public**. The
   only one used is `VITE_WEBHOOK_BASE_URL`, a URL for display.
 - `API_PROXY_TARGET` has no `VITE_` prefix, so Vite uses it in
   `vite.config.js` only and never sends it to the browser.
 - Signing happens on the backend (test sender) or in your terminal (CLI).
-- The API never returns secrets, and stored events keep only a truncated
-  signature.
+- The API returns an endpoint secret only on creation or rotation, and stored
+  events keep only a truncated signature.
 
 ## Configuration
 
@@ -148,5 +185,5 @@ defaults:
 
 | Variable | Default | Visible to the browser? | Purpose |
 | --- | --- | --- | --- |
-| `VITE_WEBHOOK_BASE_URL` | `http://localhost:3000` | **yes** (public) | Shown as the webhook URL |
+| `VITE_WEBHOOK_BASE_URL` | dev: `http://localhost:3000`; build: the page's own origin | **yes** (public) | Shown as the webhook URL |
 | `API_PROXY_TARGET` | `http://localhost:3000` | no | Where Vite forwards `/api` |
