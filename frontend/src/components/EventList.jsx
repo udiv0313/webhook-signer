@@ -1,5 +1,8 @@
 import { HttpStatusBadge } from "./StatusBadge.jsx";
 
+// Clickable list of an endpoint's recent events (newest first), with the
+// verdict, HTTP status and event type of each.
+
 function formatTime(isoTime) {
   return new Date(isoTime).toLocaleTimeString();
 }

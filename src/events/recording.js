@@ -69,6 +69,7 @@ function buildEvent({ endpoint, req, rawBody, verification, status, currentTime 
   };
 }
 
+// The short form used in event lists: no request body or headers.
 function toEventSummary(event) {
   const { valid, code, reason } = event.verification;
 

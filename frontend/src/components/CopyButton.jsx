@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-// Copies a (non-secret) value such as an endpoint ID or webhook URL.
+// Copies a value such as an endpoint ID, a webhook URL, or a newly shown secret.
 export default function CopyButton({ value, label = "Copy" }) {
   const [copied, setCopied] = useState(false);
 

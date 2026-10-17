@@ -1,5 +1,8 @@
 import { getChecklist, getExplanation } from "../diagnostics.js";
 
+// The inspector's verification section: each check in order (passed, failed,
+// or not checked), then what happened and how to fix it.
+
 const STATE_DISPLAY = {
   pass: { icon: "✓", text: "Passed" },
   fail: { icon: "✕", text: "Failed" },
