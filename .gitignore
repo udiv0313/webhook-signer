@@ -1,10 +1,31 @@
 # Dependencies
 node_modules/
+.npm/
 
-# Environment variables / secrets
+# Environment variables and secrets: only the .example templates are committed
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+credentials*.json
+secrets/
+
+# Local data (SQLite database, WAL and shared-memory files)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Build output
+dist/
+.vite/
+*.tsbuildinfo
 
 # Logs
 logs/
@@ -13,7 +34,7 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 
-# Coverage reports
+# Test coverage
 coverage/
 
 # OS files
@@ -23,6 +44,7 @@ Thumbs.db
 # IDE / editor files
 .vscode/
 .idea/
+*.swp
 
 # Temporary files
 tmp/
@@ -31,8 +53,3 @@ temp/
 # Runtime data
 *.pid
 *.seed
-# Frontend build output
-dist/
-
-# Local database files
-data/
