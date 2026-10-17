@@ -4,8 +4,10 @@
 // them to the backend (see vite.config.js), so the browser never makes a
 // cross-origin request and the backend needs no CORS headers.
 //
-// No secrets live here, or anywhere in the frontend. Signing test webhooks is
-// done by the backend.
+// No secrets are stored in the frontend. An endpoint's secret appears exactly
+// once (in the create or rotate response) so the user can copy it; it is kept
+// only in component state while shown. Signing test webhooks is done by the
+// backend.
 
 // Every failure becomes an ApiError, so components only handle one error shape.
 //   status  HTTP status, or 0 when the request never got a response
@@ -79,9 +81,16 @@ export async function getEndpoints() {
   return data.endpoints;
 }
 
-// POST /api/endpoints → the new endpoint (its secret is never returned)
+// POST /api/endpoints → the new endpoint, including its signing `secret`.
+// This is the only response that contains it; GET /api/endpoints never does.
 export function createEndpoint(name) {
   return request("/api/endpoints", { method: "POST", body: { name } });
+}
+
+// POST /api/endpoints/:id/rotate-secret → { secret }
+// The old secret stops working immediately.
+export function rotateEndpointSecret(endpointId) {
+  return request(`/api/endpoints/${encodeURIComponent(endpointId)}/rotate-secret`, { method: "POST" });
 }
 
 // GET /api/endpoints/:id/events → newest-first event summaries

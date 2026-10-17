@@ -13,25 +13,21 @@ const BODY = '{"event":"payment.success","amount":4999}';
 let app;
 let endpoint;
 
-test.before(async () => {
+// A fresh server per test: accepted signatures are remembered (replay
+// protection), so tests must not share one.
+test.beforeEach(async () => {
   app = await startServer();
-  endpoint = await createEndpoint(app.baseUrl, "Payments");
+  endpoint = await createEndpoint(app, "Payments");
 });
 
-test.beforeEach(() => {
-  app.clock.now = NOW;
-});
-
-test.after(() => {
-  app.close();
-});
+test.afterEach(() => app.close());
 
 function post(body, headers) {
   return postWebhook(app.baseUrl, endpoint.id, body, headers);
 }
 
 function signed(body, options) {
-  return signedHeaders(endpoint.id, body, options);
+  return signedHeaders(endpoint, body, options);
 }
 
 async function assertAccepted(res) {
@@ -96,13 +92,44 @@ test("7. body modified after signing → 401", async () => {
   await assertRejected(await post(tampered, signed(BODY)), 401, "INVALID_SIGNATURE");
 });
 
-test("8. same valid request sent twice within the window → both 200 (timestamps alone do not stop this)", async () => {
+test("8. same valid request sent twice within the window → second is 409 REPLAY_DETECTED", async () => {
   const headers = signed(BODY);
 
   await assertAccepted(await post(BODY, headers));
 
+  // A minute later: the timestamp alone would still pass, but the exact same
+  // signature was already accepted.
   app.clock.now = NOW + 60;
+  await assertRejected(await post(BODY, headers), 409, "REPLAY_DETECTED");
+});
+
+test("replays are refused whatever the hex case of the signature", async () => {
+  const headers = signed(BODY);
+  const upper = { ...headers, "X-Webhook-Signature": "sha256=" + headers["X-Webhook-Signature"].slice(7).toUpperCase() };
+
   await assertAccepted(await post(BODY, headers));
+  await assertRejected(await post(BODY, upper), 409, "REPLAY_DETECTED");
+});
+
+test("the same body re-signed with a new timestamp is a new delivery, not a replay", async () => {
+  await assertAccepted(await post(BODY, signed(BODY)));
+  await assertAccepted(await post(BODY, signed(BODY, { timestamp: NOW + 1 })));
+});
+
+test("a rejected request is not remembered: sending it correctly afterwards works", async () => {
+  const headers = signed(BODY);
+
+  await assertRejected(await post(`${BODY}\n`, headers), 401, "INVALID_SIGNATURE");
+  await assertAccepted(await post(BODY, headers));
+});
+
+test("replay protection is per endpoint", async () => {
+  const other = await createEndpoint(app, "Other");
+  const sameSecretHeaders = signed(BODY);
+
+  await assertAccepted(await post(BODY, sameSecretHeaders));
+  // Different endpoint, different secret: its own fresh request is accepted.
+  await assertAccepted(await postWebhook(app.baseUrl, other.id, BODY, signedHeaders(other, BODY)));
 });
 
 test("9. timestamp exactly at the tolerance boundary → 200 (both directions)", async () => {
@@ -136,8 +163,8 @@ test("the tolerance is configurable per server", async () => {
   const strict = await startServer({ toleranceSeconds: 60 });
 
   try {
-    const strictEndpoint = await createEndpoint(strict.baseUrl);
-    const headers = signedHeaders(strictEndpoint.id, BODY, { timestamp: NOW - 61 });
+    const strictEndpoint = await createEndpoint(strict);
+    const headers = signedHeaders(strictEndpoint, BODY, { timestamp: NOW - 61 });
 
     await assertRejected(await postWebhook(strict.baseUrl, strictEndpoint.id, BODY, headers), 401, "TIMESTAMP_TOO_OLD");
   } finally {
@@ -148,12 +175,12 @@ test("the tolerance is configurable per server", async () => {
 // --- Per-endpoint secrets ----------------------------------------------------
 
 test("a signature made for one endpoint is rejected by another endpoint", async () => {
-  const other = await createEndpoint(app.baseUrl, "Other");
+  const other = await createEndpoint(app, "Other");
 
-  await assertRejected(await post(BODY, signedHeaders(other.id, BODY)), 401, "INVALID_SIGNATURE");
+  await assertRejected(await post(BODY, signedHeaders(other, BODY)), 401, "INVALID_SIGNATURE");
 });
 
-test("signing with the master secret directly is rejected (only the derived endpoint secret works)", async () => {
+test("signing with the master secret is rejected (only the endpoint's own secret works)", async () => {
   await assertRejected(await post(BODY, signed(BODY, { secret: MASTER_SECRET })), 401, "INVALID_SIGNATURE");
 });
 

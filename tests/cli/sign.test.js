@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { deriveEndpointSecret, signPayload } from "../../src/core/signature.js";
+import { signPayload } from "../../src/core/signature.js";
 import { MASTER_SECRET, NOW, createEndpoint, postWebhook, startServer } from "../helpers.js";
 
 // These tests run the CLI as a real child process, exactly as a user would
@@ -11,11 +11,11 @@ import { MASTER_SECRET, NOW, createEndpoint, postWebhook, startServer } from "..
 
 const CLI = path.join(import.meta.dirname, "..", "..", "src", "cli", "sign.js");
 const PAYLOAD = '{"event":"payment.success","amount":4999}';
-const ENDPOINT_ID = "ep_0123456789abcdef";
+const SECRET = "whsec_" + "A".repeat(43);
 
 // Only the variables we pass are visible to the CLI, so a real .env or shell
-// WEBHOOK_SECRET can never leak into these tests.
-function runCli(args, env = { WEBHOOK_SECRET: MASTER_SECRET }) {
+// variable can never leak into these tests.
+function runCli(args, env = { WEBHOOK_ENDPOINT_SECRET: SECRET }) {
   return spawnSync(process.execPath, [CLI, ...args], { env, encoding: "utf8" });
 }
 
@@ -31,23 +31,24 @@ function parseHeaderLines(output) {
   return headers;
 }
 
-test("prints the timestamp and signature headers for the endpoint, and never prints a secret", () => {
-  const result = runCli([`--endpoint=${ENDPOINT_ID}`, `--timestamp=${NOW}`, PAYLOAD]);
-  const endpointSecret = deriveEndpointSecret(MASTER_SECRET, ENDPOINT_ID);
+function assertFails(result, messagePattern) {
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, messagePattern);
+}
+
+test("prints the timestamp and signature headers, and never prints the secret", () => {
+  const result = runCli([`--timestamp=${NOW}`, PAYLOAD]);
 
   assert.equal(result.status, 0);
-  assert.equal(
-    result.stdout,
-    `X-Webhook-Timestamp: ${NOW}\nX-Webhook-Signature: ${signPayload(endpointSecret, NOW, PAYLOAD)}\n`,
-  );
+  assert.equal(result.stdout, `X-Webhook-Timestamp: ${NOW}\nX-Webhook-Signature: ${signPayload(SECRET, NOW, PAYLOAD)}\n`);
   assert.equal(result.stderr, "");
-  assert.ok(!result.stdout.includes(MASTER_SECRET));
-  assert.ok(!result.stdout.includes(endpointSecret.toString("hex")));
+  assert.ok(!result.stdout.includes(SECRET));
 });
 
-test("different endpoints get different signatures for the same payload", () => {
-  const first = runCli([`--endpoint=${ENDPOINT_ID}`, `--timestamp=${NOW}`, PAYLOAD]);
-  const second = runCli(["--endpoint=ep_fedcba9876543210", `--timestamp=${NOW}`, PAYLOAD]);
+test("different secrets give different signatures for the same payload", () => {
+  const first = runCli([`--timestamp=${NOW}`, PAYLOAD]);
+  const second = runCli([`--timestamp=${NOW}`, PAYLOAD], { WEBHOOK_ENDPOINT_SECRET: "whsec_" + "B".repeat(43) });
 
   assert.notEqual(
     parseHeaderLines(first.stdout)["X-Webhook-Signature"],
@@ -56,7 +57,7 @@ test("different endpoints get different signatures for the same payload", () => 
 });
 
 test("options also work as two separate arguments", () => {
-  const result = runCli(["--endpoint", ENDPOINT_ID, "--timestamp", String(NOW), PAYLOAD]);
+  const result = runCli(["--timestamp", String(NOW), PAYLOAD]);
 
   assert.equal(result.status, 0);
   assert.equal(parseHeaderLines(result.stdout)["X-Webhook-Timestamp"], String(NOW));
@@ -64,7 +65,7 @@ test("options also work as two separate arguments", () => {
 
 test("without --timestamp, the current time is used", () => {
   const before = Math.floor(Date.now() / 1000);
-  const result = runCli([`--endpoint=${ENDPOINT_ID}`, PAYLOAD]);
+  const result = runCli([PAYLOAD]);
   const after = Math.floor(Date.now() / 1000);
 
   const timestamp = Number(parseHeaderLines(result.stdout)["X-Webhook-Timestamp"]);
@@ -73,15 +74,15 @@ test("without --timestamp, the current time is used", () => {
   assert.ok(timestamp >= before && timestamp <= after, `timestamp ${timestamp} not in [${before}, ${after}]`);
 });
 
-test("server accepts requests signed by the CLI (API → CLI → HTTP → server)", async () => {
+test("server accepts requests signed by the CLI with the endpoint's secret (API → CLI → HTTP → server)", async () => {
   const app = await startServer();
 
   try {
-    const endpoint = await createEndpoint(app.baseUrl);
+    const endpoint = await createEndpoint(app);
+    const env = { WEBHOOK_ENDPOINT_SECRET: endpoint.secret };
 
     for (const payload of [PAYLOAD, '{\n  "pretty": true\n}', '{"name":"Zoë 🚀"}']) {
-      const headers = parseHeaderLines(runCli([`--endpoint=${endpoint.id}`, `--timestamp=${NOW}`, payload]).stdout);
-
+      const headers = parseHeaderLines(runCli([`--timestamp=${NOW}`, payload], env).stdout);
       const res = await postWebhook(app.baseUrl, endpoint.id, payload, headers);
 
       assert.equal(res.status, 200, `payload: ${payload}`);
@@ -89,7 +90,7 @@ test("server accepts requests signed by the CLI (API → CLI → HTTP → server
     }
 
     // A CLI signature made with an old timestamp is rejected by the server.
-    const oldHeaders = parseHeaderLines(runCli([`--endpoint=${endpoint.id}`, `--timestamp=${NOW - 600}`, PAYLOAD]).stdout);
+    const oldHeaders = parseHeaderLines(runCli([`--timestamp=${NOW - 600}`, PAYLOAD], env).stdout);
     const res = await postWebhook(app.baseUrl, endpoint.id, PAYLOAD, oldHeaders);
 
     assert.equal(res.status, 401);
@@ -99,52 +100,36 @@ test("server accepts requests signed by the CLI (API → CLI → HTTP → server
   }
 });
 
-test("fails with exit code 1 when --endpoint is missing", () => {
-  const result = runCli([PAYLOAD]);
+test("fails with exit code 1 when WEBHOOK_ENDPOINT_SECRET is not set (the master secret is not enough)", () => {
+  assertFails(runCli([PAYLOAD], {}), /WEBHOOK_ENDPOINT_SECRET is not set/);
+  assertFails(runCli([PAYLOAD], { WEBHOOK_SECRET: MASTER_SECRET }), /WEBHOOK_ENDPOINT_SECRET is not set/);
+});
 
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /--endpoint is required/);
+test("fails with exit code 1 when WEBHOOK_ENDPOINT_SECRET is not an endpoint secret", () => {
+  for (const value of ["secret", MASTER_SECRET, "whsec_short"]) {
+    assertFails(runCli([PAYLOAD], { WEBHOOK_ENDPOINT_SECRET: value }), /does not look like an endpoint secret/);
+  }
+});
+
+test("--endpoint (the old interface) explains what changed", () => {
+  assertFails(runCli(["--endpoint=ep_0123456789abcdef", PAYLOAD]), /--endpoint is no longer used/);
+  assertFails(runCli(["--endpoint", "ep_0123456789abcdef", PAYLOAD]), /--endpoint is no longer used/);
 });
 
 test("fails with exit code 1 for an invalid --timestamp", () => {
   for (const value of ["yesterday", "-60", "1.5", "1700000000000"]) {
-    const result = runCli([`--endpoint=${ENDPOINT_ID}`, `--timestamp=${value}`, PAYLOAD]);
-
-    assert.equal(result.status, 1, `value: ${value}`);
-    assert.equal(result.stdout, "");
-    assert.match(result.stderr, /--timestamp must be Unix time in whole seconds/);
+    assertFails(runCli([`--timestamp=${value}`, PAYLOAD]), /--timestamp must be Unix time in whole seconds/);
   }
 });
 
 test("fails with exit code 1 for an unknown option", () => {
-  const result = runCli([`--endpoint=${ENDPOINT_ID}`, "--secret=oops", PAYLOAD]);
-
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /Unknown option/);
-});
-
-test("fails with exit code 1 when WEBHOOK_SECRET is not set", () => {
-  const result = runCli([`--endpoint=${ENDPOINT_ID}`, PAYLOAD], {});
-
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /WEBHOOK_SECRET is not set/);
+  assertFails(runCli(["--secret=oops", PAYLOAD]), /Unknown option/);
 });
 
 test("fails with exit code 1 when no payload is given", () => {
-  const result = runCli([`--endpoint=${ENDPOINT_ID}`]);
-
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /No payload given/);
+  assertFails(runCli([]), /No payload given/);
 });
 
 test("fails with exit code 1 when the payload is split into several arguments (forgot quotes)", () => {
-  const result = runCli([`--endpoint=${ENDPOINT_ID}`, '{"event":', '"payment.success"}']);
-
-  assert.equal(result.status, 1);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /Expected 1 payload argument but got 2/);
+  assertFails(runCli(['{"event":', '"payment.success"}']), /Expected 1 payload argument but got 2/);
 });

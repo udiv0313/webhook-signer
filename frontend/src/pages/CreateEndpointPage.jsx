@@ -3,13 +3,19 @@ import { createEndpoint } from "../services/api.js";
 import { webhookUrl } from "../config.js";
 import CopyButton from "../components/CopyButton.jsx";
 import ErrorMessage from "../components/ErrorMessage.jsx";
+import SecretReveal from "../components/SecretReveal.jsx";
 import { EndpointStatus } from "../components/StatusBadge.jsx";
 
+// Create an endpoint, then show its signing secret once. Leaving the page is
+// only possible after the user confirms they saved the secret.
 export default function CreateEndpointPage({ onOpenEndpoint, onCancel }) {
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [created, setCreated] = useState(null);
+  // The secret is gone once the user leaves this screen, so leaving is only
+  // possible after they confirm they saved it.
+  const [secretSaved, setSecretSaved] = useState(false);
 
   async function handleSubmit(submitEvent) {
     submitEvent.preventDefault();
@@ -36,6 +42,8 @@ export default function CreateEndpointPage({ onOpenEndpoint, onCancel }) {
           </p>
         </div>
 
+        <SecretReveal secret={created.secret} />
+
         <div className="card">
           <h2>{created.name}</h2>
           <dl className="details">
@@ -51,21 +59,31 @@ export default function CreateEndpointPage({ onOpenEndpoint, onCancel }) {
             <dd>
               <EndpointStatus status={created.status} />
             </dd>
-            <dt>Signing secret</dt>
-            <dd className="muted">
-              Not shown. It is derived on the server from WEBHOOK_SECRET and this endpoint ID, and never sent to the
-              browser.
-            </dd>
           </dl>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={secretSaved}
+              onChange={(changeEvent) => setSecretSaved(changeEvent.target.checked)}
+            />
+            I have saved the signing secret
+          </label>
           <div className="actions">
-            <button type="button" className="button button-primary" onClick={() => onOpenEndpoint(created.id)}>
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!secretSaved}
+              onClick={() => onOpenEndpoint(created.id)}
+            >
               Open endpoint and send a test webhook
             </button>
             <button
               type="button"
               className="button"
+              disabled={!secretSaved}
               onClick={() => {
                 setCreated(null);
+                setSecretSaved(false);
                 setName("");
               }}
             >

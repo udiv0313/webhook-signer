@@ -2,10 +2,11 @@
 // explanation of what went wrong and how to fix it.
 //
 // The backend checks a webhook in this order and stops at the first failure:
-//   1. body size  2. headers present and well-formed  3. timestamp window  4. signature
+//   1. body size  2. headers present and well-formed  3. timestamp window
+//   4. signature  5. replay (was this exact request already accepted?)
 // Steps after a failure never ran, so they are shown as "not checked", not as passed.
 
-const STEPS = ["Body size", "Headers", "Timestamp", "Signature"];
+const STEPS = ["Body size", "Headers", "Timestamp", "Signature", "Replay check"];
 
 // Which step (index into STEPS) each error code fails at.
 const FAILED_STEP = {
@@ -17,6 +18,7 @@ const FAILED_STEP = {
   TIMESTAMP_TOO_OLD: 2,
   TIMESTAMP_IN_FUTURE: 2,
   INVALID_SIGNATURE: 3,
+  REPLAY_DETECTED: 4,
 };
 
 const PASS_DETAILS = [
@@ -24,6 +26,7 @@ const PASS_DETAILS = [
   "Timestamp and signature headers present and well-formed",
   "Within the allowed time window",
   "Matches the body and timestamp that arrived",
+  "First delivery of this exact request",
 ];
 
 const EXPLANATIONS = {
@@ -59,9 +62,14 @@ const EXPLANATIONS = {
     summary: "The timestamp is further in the future than the allowed window.",
     fix: "The sender's clock is probably ahead of the server's. Sync both clocks with NTP.",
   },
+  REPLAY_DETECTED: {
+    summary:
+      "Everything checks out, but this exact request (same timestamp, body and signature) was already accepted. A captured webhook re-sent by an attacker looks exactly like this.",
+    fix: "Senders must sign every delivery, including retries, with a fresh timestamp. If you re-sent it on purpose, this is the protection working.",
+  },
   INVALID_SIGNATURE: {
     summary: "The headers and timestamp are fine, but the signature does not match the body that arrived.",
-    fix: "Common causes: the body changed after signing (JSON re-serialized, a newline added), the wrong endpoint ID was used to sign, or the sender and server use different WEBHOOK_SECRET values.",
+    fix: "Common causes: the body changed after signing (JSON re-serialized, a newline added), the sender used another endpoint's secret, or an old secret from before the last rotation.",
   },
 };
 
@@ -112,10 +120,13 @@ const STATUS_TEXT = {
   403: "Forbidden",
   404: "Not Found",
   405: "Method Not Allowed",
+  409: "Conflict",
   413: "Payload Too Large",
   415: "Unsupported Media Type",
+  429: "Too Many Requests",
   500: "Internal Server Error",
   502: "Bad Gateway",
+  503: "Service Unavailable",
 };
 
 export function httpStatusText(status) {

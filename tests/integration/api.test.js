@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveEndpointSecret } from "../../src/core/signature.js";
 import {
   MASTER_SECRET,
   MAX_BODY_BYTES,
@@ -29,7 +28,7 @@ test.afterEach(() => {
 });
 
 function api(path, options) {
-  return fetch(`${app.baseUrl}${path}`, options);
+  return app.fetch(path, options);
 }
 
 function postJson(path, body) {
@@ -46,20 +45,22 @@ async function assertError(res, status, code) {
   return json;
 }
 
-// No response may ever contain the master secret or an endpoint's derived secret.
-function assertNoSecrets(text, endpointId) {
+// Endpoint secrets appear only in the response that created (or rotated)
+// them. Every other response must contain neither them nor the master secret.
+function assertNoSecrets(text, endpoint) {
   assert.ok(!text.includes(MASTER_SECRET), "master secret leaked");
+  assert.ok(!text.includes(endpoint.secret), "endpoint secret leaked");
+  assert.ok(!text.includes("whsec_"), "an endpoint secret leaked");
+}
 
-  if (endpointId) {
-    const derived = deriveEndpointSecret(MASTER_SECRET, endpointId);
-    assert.ok(!text.includes(derived.toString("hex")), "endpoint secret leaked (hex)");
-    assert.ok(!text.includes(derived.toString("base64")), "endpoint secret leaked (base64)");
-  }
+// An endpoint as GET /api/endpoints shows it: everything except the secret.
+function withoutSecret({ secret, ...endpoint }) {
+  return endpoint;
 }
 
 // --- 1. / 2. Endpoints -------------------------------------------------------
 
-test("1. POST /api/endpoints creates an endpoint (201) without exposing its secret", async () => {
+test("1. POST /api/endpoints creates an endpoint (201) and returns its random secret, once", async () => {
   const res = await postJson("/api/endpoints", JSON.stringify({ name: "Stripe Payments" }));
   const text = await res.text();
   const endpoint = JSON.parse(text);
@@ -73,21 +74,30 @@ test("1. POST /api/endpoints creates an endpoint (201) without exposing its secr
     createdAt: "2023-11-14T22:13:20.000Z",
     webhookPath: `/api/webhooks/${endpoint.id}`,
     recentEventCount: 0,
+    secret: endpoint.secret,
   });
-  assertNoSecrets(text, endpoint.id);
+  assert.match(endpoint.secret, /^whsec_[A-Za-z0-9_-]{43}$/);
+  assert.ok(!text.includes(MASTER_SECRET));
+});
+
+test("every endpoint gets a different random secret", async () => {
+  const first = await createEndpoint(app, "First");
+  const second = await createEndpoint(app, "Second");
+
+  assert.notEqual(first.secret, second.secret);
 });
 
 test("2. GET /api/endpoints lists endpoints in creation order, without secrets", async () => {
-  const first = await createEndpoint(app.baseUrl, "First");
-  const second = await createEndpoint(app.baseUrl, "Second");
+  const first = await createEndpoint(app, "First");
+  const second = await createEndpoint(app, "Second");
 
   const res = await api("/api/endpoints");
   const text = await res.text();
 
   assert.equal(res.status, 200);
-  assert.deepEqual(JSON.parse(text), { endpoints: [first, second] });
-  assertNoSecrets(text, first.id);
-  assertNoSecrets(text, second.id);
+  assert.deepEqual(JSON.parse(text), { endpoints: [withoutSecret(first), withoutSecret(second)] });
+  assertNoSecrets(text, first);
+  assertNoSecrets(text, second);
 });
 
 test("GET /api/endpoints returns an empty list before anything is created", async () => {
@@ -97,7 +107,7 @@ test("GET /api/endpoints returns an empty list before anything is created", asyn
 });
 
 test("endpoint names are trimmed", async () => {
-  const endpoint = await createEndpoint(app.baseUrl, "  Spaced Name  ");
+  const endpoint = await createEndpoint(app, "  Spaced Name  ");
 
   assert.equal(endpoint.name, "Spaced Name");
 });
@@ -121,7 +131,7 @@ test("12. malformed JSON in POST /api/endpoints → 400 INVALID_JSON", async () 
 // --- 3. Unknown / invalid IDs ------------------------------------------------
 
 test("3. unknown endpoint → 404 ENDPOINT_NOT_FOUND (webhooks and events)", async () => {
-  const headers = signedHeaders(UNKNOWN_ENDPOINT_ID, BODY);
+  const headers = signedHeaders({ id: UNKNOWN_ENDPOINT_ID, secret: "whsec_unknown" }, BODY);
 
   await assertError(await postWebhook(app.baseUrl, UNKNOWN_ENDPOINT_ID, BODY, headers), 404, "ENDPOINT_NOT_FOUND");
   await assertError(await api(`/api/endpoints/${UNKNOWN_ENDPOINT_ID}/events`), 404, "ENDPOINT_NOT_FOUND");
@@ -142,9 +152,9 @@ test("unknown or malformed event IDs → 404 EVENT_NOT_FOUND / 400 INVALID_EVENT
 // --- 4. / 5. / 6. Receiving webhooks -----------------------------------------
 
 test("4. valid webhook → 200 with an eventId", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
+  const endpoint = await createEndpoint(app);
 
-  const res = await postWebhook(app.baseUrl, endpoint.id, BODY, signedHeaders(endpoint.id, BODY));
+  const res = await postWebhook(app.baseUrl, endpoint.id, BODY, signedHeaders(endpoint, BODY));
   const json = await res.json();
 
   assert.equal(res.status, 200);
@@ -153,8 +163,8 @@ test("4. valid webhook → 200 with an eventId", async () => {
 });
 
 test("5. invalid signature → 401 INVALID_SIGNATURE with an eventId", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
-  const headers = signedHeaders(endpoint.id, BODY, { secret: "wrong-secret" });
+  const endpoint = await createEndpoint(app);
+  const headers = signedHeaders(endpoint, BODY, { secret: "wrong-secret" });
 
   const json = await assertError(await postWebhook(app.baseUrl, endpoint.id, BODY, headers), 401, "INVALID_SIGNATURE");
 
@@ -162,8 +172,8 @@ test("5. invalid signature → 401 INVALID_SIGNATURE with an eventId", async () 
 });
 
 test("6. expired timestamp → 401 TIMESTAMP_TOO_OLD", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
-  const headers = signedHeaders(endpoint.id, BODY, { timestamp: NOW - 600 });
+  const endpoint = await createEndpoint(app);
+  const headers = signedHeaders(endpoint, BODY, { timestamp: NOW - 600 });
 
   await assertError(await postWebhook(app.baseUrl, endpoint.id, BODY, headers), 401, "TIMESTAMP_TOO_OLD");
 });
@@ -171,9 +181,9 @@ test("6. expired timestamp → 401 TIMESTAMP_TOO_OLD", async () => {
 // --- 7. / 8. / 9. Events -----------------------------------------------------
 
 test("7. + 8. a webhook is recorded as an event that can be retrieved in full", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
+  const endpoint = await createEndpoint(app);
   const headers = {
-    ...signedHeaders(endpoint.id, BODY),
+    ...signedHeaders(endpoint, BODY),
     "Content-Type": "application/json",
     Authorization: "Bearer should-not-be-stored",
     Cookie: "session=should-not-be-stored",
@@ -208,12 +218,12 @@ test("7. + 8. a webhook is recorded as an event that can be retrieved in full", 
   assert.equal(event.request.headers.cookie, undefined);
   assert.ok(!text.includes("should-not-be-stored"));
   assert.match(event.request.headers["x-webhook-signature"], /^sha256=[0-9a-f]{12}…$/);
-  assertNoSecrets(text, endpoint.id);
+  assertNoSecrets(text, endpoint);
 });
 
 test("a rejected webhook's event explains why it was rejected", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
-  const headers = signedHeaders(endpoint.id, BODY, { timestamp: NOW - 600 });
+  const endpoint = await createEndpoint(app);
+  const headers = signedHeaders(endpoint, BODY, { timestamp: NOW - 600 });
 
   const { eventId } = await (await postWebhook(app.baseUrl, endpoint.id, BODY, headers)).json();
   const event = await (await api(`/api/events/${eventId}`)).json();
@@ -231,12 +241,12 @@ test("a rejected webhook's event explains why it was rejected", async () => {
 });
 
 test("9. GET /api/endpoints/:id/events lists only that endpoint's events, newest first", async () => {
-  const endpoint = await createEndpoint(app.baseUrl, "Mine");
-  const other = await createEndpoint(app.baseUrl, "Other");
+  const endpoint = await createEndpoint(app, "Mine");
+  const other = await createEndpoint(app, "Other");
 
-  const valid = await (await postWebhook(app.baseUrl, endpoint.id, BODY, signedHeaders(endpoint.id, BODY))).json();
+  const valid = await (await postWebhook(app.baseUrl, endpoint.id, BODY, signedHeaders(endpoint, BODY))).json();
   const invalid = await (await postWebhook(app.baseUrl, endpoint.id, BODY, { "X-Webhook-Timestamp": String(NOW) })).json();
-  await (await postWebhook(app.baseUrl, other.id, BODY, signedHeaders(other.id, BODY))).json();
+  await (await postWebhook(app.baseUrl, other.id, BODY, signedHeaders(other, BODY))).json();
 
   const res = await api(`/api/endpoints/${endpoint.id}/events`);
 
@@ -262,10 +272,10 @@ test("9. GET /api/endpoints/:id/events lists only that endpoint's events, newest
 });
 
 test("event summaries show the event type when the body is JSON with an event/type field", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
+  const endpoint = await createEndpoint(app);
 
   for (const body of ['{"type":"customer.created"}', "plain text", '{"event":42}', "[]"]) {
-    await (await postWebhook(app.baseUrl, endpoint.id, body, signedHeaders(endpoint.id, body))).json();
+    await (await postWebhook(app.baseUrl, endpoint.id, body, signedHeaders(endpoint, body))).json();
   }
 
   const { events } = await (await api(`/api/endpoints/${endpoint.id}/events`)).json();
@@ -277,11 +287,11 @@ test("event summaries show the event type when the body is JSON with an event/ty
 });
 
 test("GET /api/endpoints includes how many recent events each endpoint has", async () => {
-  const busy = await createEndpoint(app.baseUrl, "Busy");
-  const quiet = await createEndpoint(app.baseUrl, "Quiet");
+  const busy = await createEndpoint(app, "Busy");
+  const quiet = await createEndpoint(app, "Quiet");
 
   for (let i = 0; i < 3; i++) {
-    await (await postWebhook(app.baseUrl, busy.id, BODY, signedHeaders(busy.id, BODY))).json();
+    await (await postWebhook(app.baseUrl, busy.id, BODY, signedHeaders(busy, BODY))).json();
   }
 
   const { endpoints } = await (await api("/api/endpoints")).json();
@@ -296,34 +306,51 @@ test("GET /api/endpoints includes how many recent events each endpoint has", asy
 });
 
 test("an endpoint with no webhooks has an empty event list", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
+  const endpoint = await createEndpoint(app);
 
   assert.deepEqual(await (await api(`/api/endpoints/${endpoint.id}/events`)).json(), { events: [] });
 });
 
-test("only the 100 most recent events are kept in memory", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
-  const eventIds = [];
+test("only the newest events are kept, per endpoint: a busy endpoint never removes another's", async () => {
+  const capped = await startServer({ maxEventsPerEndpoint: 3 });
 
-  for (let i = 0; i < 101; i++) {
-    const { eventId } = await (await postWebhook(app.baseUrl, endpoint.id, BODY, signedHeaders(endpoint.id, BODY))).json();
-    eventIds.push(eventId);
+  try {
+    const busy = await createEndpoint(capped, "Busy");
+    const quiet = await createEndpoint(capped, "Quiet");
+    const send = async (endpoint) =>
+      (await (await postWebhook(capped.baseUrl, endpoint.id, BODY, signedHeaders(endpoint, BODY))).json()).eventId;
+
+    const quietEventId = await send(quiet);
+    const busyEventIds = [];
+
+    for (let i = 0; i < 5; i++) {
+      busyEventIds.push(await send(busy));
+    }
+
+    const busyEvents = (await (await capped.fetch(`/api/endpoints/${busy.id}/events`)).json()).events;
+    const quietEvents = (await (await capped.fetch(`/api/endpoints/${quiet.id}/events`)).json()).events;
+
+    assert.deepEqual(
+      busyEvents.map((event) => event.id),
+      busyEventIds.slice(2).reverse(),
+    );
+    assert.deepEqual(
+      quietEvents.map((event) => event.id),
+      [quietEventId],
+    );
+    await assertError(await capped.fetch(`/api/events/${busyEventIds[0]}`), 404, "EVENT_NOT_FOUND");
+  } finally {
+    await capped.close();
   }
-
-  const { events } = await (await api(`/api/endpoints/${endpoint.id}/events`)).json();
-
-  assert.equal(events.length, 100);
-  assert.equal(events[0].id, eventIds[100]);
-  await assertError(await api(`/api/events/${eventIds[0]}`), 404, "EVENT_NOT_FOUND");
 });
 
 // --- 10. Body size limit -----------------------------------------------------
 
 test("10. oversized webhook body → 413, not verified, recorded as an event", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
+  const endpoint = await createEndpoint(app);
   const bigBody = "x".repeat(MAX_BODY_BYTES + 1);
 
-  const res = await postWebhook(app.baseUrl, endpoint.id, bigBody, signedHeaders(endpoint.id, bigBody));
+  const res = await postWebhook(app.baseUrl, endpoint.id, bigBody, signedHeaders(endpoint, bigBody));
   const json = await assertError(res, 413, "PAYLOAD_TOO_LARGE");
 
   const event = await (await api(`/api/events/${json.eventId}`)).json();
@@ -340,17 +367,17 @@ test("10. oversized webhook body → 413, not verified, recorded as an event", a
 });
 
 test("a body exactly at the limit is accepted", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
+  const endpoint = await createEndpoint(app);
   const body = "x".repeat(MAX_BODY_BYTES);
 
-  const res = await postWebhook(app.baseUrl, endpoint.id, body, signedHeaders(endpoint.id, body));
+  const res = await postWebhook(app.baseUrl, endpoint.id, body, signedHeaders(endpoint, body));
 
   assert.equal(res.status, 200);
   await res.json();
 });
 
 test("oversized body sent without Content-Length (chunked) → 413", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
+  const endpoint = await createEndpoint(app);
   const chunk = new TextEncoder().encode("y".repeat(500));
   const stream = new ReadableStream({
     start(controller) {
@@ -373,7 +400,7 @@ test("oversized body on POST /api/endpoints → 413", async () => {
 // --- 11. Routing errors ------------------------------------------------------
 
 test("11. unsupported HTTP method → 405 METHOD_NOT_ALLOWED with an Allow header", async () => {
-  const endpoint = await createEndpoint(app.baseUrl);
+  const endpoint = await createEndpoint(app);
 
   const cases = [
     ["DELETE", "/api/endpoints", "POST, GET"],
@@ -418,10 +445,10 @@ test("an unexpected error → 500 INTERNAL_ERROR without leaking details", async
   });
 
   try {
-    const endpoint = await createEndpoint(fragile.baseUrl);
+    const endpoint = await createEndpoint(fragile);
     broken = true;
 
-    const res = await postWebhook(fragile.baseUrl, endpoint.id, BODY, signedHeaders(endpoint.id, BODY));
+    const res = await postWebhook(fragile.baseUrl, endpoint.id, BODY, signedHeaders(endpoint, BODY));
     const text = await res.text();
 
     assert.equal(res.status, 500);

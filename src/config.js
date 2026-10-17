@@ -5,6 +5,11 @@
 const DEFAULT_PORT = 3000;
 const DEFAULT_TOLERANCE_SECONDS = 300;
 const DEFAULT_MAX_BODY_BYTES = 1_048_576; // 1 MB
+const DEFAULT_DATABASE_PATH = "data/webhook-signer.db";
+const DEFAULT_WORKSPACE_TTL_HOURS = 72;
+const DEFAULT_MAX_EVENTS_PER_ENDPOINT = 50;
+const DEFAULT_MAX_ENDPOINTS_PER_WORKSPACE = 20;
+const DEFAULT_FRONTEND_DIST = "frontend/dist";
 
 // The value .env.example ships with. Running with it would mean using a secret
 // that anyone can read in the repository.
@@ -37,6 +42,13 @@ function loadConfig() {
     maxBodyBytes: readPositiveInteger("WEBHOOK_MAX_BODY_SIZE", DEFAULT_MAX_BODY_BYTES),
     port: Number(process.env.PORT || DEFAULT_PORT),
     testSenderEnabled: process.env.WEBHOOK_TEST_SENDER_ENABLED === "true",
+    databasePath: process.env.DATABASE_PATH || DEFAULT_DATABASE_PATH,
+    workspaceTtlSeconds: readPositiveInteger("WORKSPACE_TTL_HOURS", DEFAULT_WORKSPACE_TTL_HOURS) * 60 * 60,
+    maxEventsPerEndpoint: readPositiveInteger("WEBHOOK_MAX_EVENTS_PER_ENDPOINT", DEFAULT_MAX_EVENTS_PER_ENDPOINT),
+    maxEndpointsPerWorkspace: readPositiveInteger("WORKSPACE_MAX_ENDPOINTS", DEFAULT_MAX_ENDPOINTS_PER_WORKSPACE),
+    cookieSecure: process.env.COOKIE_SECURE === "true",
+    trustProxy: process.env.TRUST_PROXY === "true",
+    staticDir: process.env.FRONTEND_DIST || DEFAULT_FRONTEND_DIST,
   };
 }
 

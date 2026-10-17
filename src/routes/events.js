@@ -1,12 +1,18 @@
 import { HttpError, sendJson } from "../http/helpers.js";
 import { EVENT_ID_PATTERN } from "../lib/ids.js";
 import { toEventSummary } from "../events/recording.js";
-import { findEndpoint } from "./lookups.js";
+import { findOwnedEndpoint } from "./lookups.js";
 
-function eventRoutes({ store }) {
+/**
+ * Event routes: an endpoint's recent event summaries and one event's full
+ * details. Both return 404 for anything outside the caller's workspace.
+ */
+
+/** Returns the event routes as { method, pattern, handler } entries. */
+function eventRoutes({ store, sessions }) {
   // GET /api/endpoints/:endpointId/events   (newest first, summaries only)
   async function listEndpointEvents(req, res, [endpointId]) {
-    const endpoint = findEndpoint(store, endpointId);
+    const endpoint = findOwnedEndpoint(store, sessions.find(req), endpointId);
 
     sendJson(res, 200, { events: store.listEventsForEndpoint(endpoint.id).map(toEventSummary) });
   }
@@ -17,7 +23,9 @@ function eventRoutes({ store }) {
       throw new HttpError(400, "INVALID_EVENT_ID", "Event IDs look like evt_ followed by 16 hex characters.");
     }
 
-    const event = store.getEvent(eventId);
+    // Another workspace's event gives the same 404 as one that does not exist.
+    const workspace = sessions.find(req);
+    const event = workspace === null ? null : store.getWorkspaceEvent(workspace.id, eventId);
 
     if (!event) {
       throw new HttpError(404, "EVENT_NOT_FOUND", "Webhook event was not found.");

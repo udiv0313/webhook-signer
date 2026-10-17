@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { HttpError, parseJsonBody, readBody, sendJson } from "../http/helpers.js";
-import { SIGNATURE_HEADER, TIMESTAMP_HEADER, deriveEndpointSecret, signPayload } from "../core/signature.js";
-import { findEndpoint } from "./lookups.js";
+import { SIGNATURE_HEADER, TIMESTAMP_HEADER, signPayload } from "../core/signature.js";
+import { findOwnedEndpoint } from "./lookups.js";
 
 // Test sender: the server signs a test webhook (so the browser never needs the
 // secret) and delivers it to itself through the normal webhook route.
@@ -13,9 +13,9 @@ const TEST_SCENARIOS = [
   "expired_timestamp",
   "missing_signature",
   "malformed_timestamp",
+  "replay",
 ];
 const TEST_SENDER_USER_AGENT = "webhook-signer-test-sender";
-const LOOPBACK_ADDRESSES = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
 
 // "application/json; charset=utf-8" → true
 function isJsonContentType(req) {
@@ -24,12 +24,24 @@ function isJsonContentType(req) {
   return mediaType === "application/json";
 }
 
-function testSenderRoutes({ store, now, masterSecret, toleranceSeconds, maxBodyBytes, testSenderEnabled }) {
-  // Build a test webhook for one scenario. Signing uses the same functions as a
-  // real sender (deriveEndpointSecret + signPayload); the secret never leaves here.
+/** Returns the test-sender route as { method, pattern, handler } entries. */
+function testSenderRoutes({
+  store,
+  sessions,
+  now,
+  endpointSecret,
+  rateLimit,
+  internalDelivery,
+  toleranceSeconds,
+  maxBodyBytes,
+  testSenderEnabled,
+}) {
+  // Build a test webhook for one scenario. Signing uses the same function as a
+  // real sender (signPayload) with the endpoint's own secret, which never
+  // leaves the server here.
   function buildTestRequest(endpoint, payload, scenario) {
     const currentTime = now();
-    const secret = deriveEndpointSecret(masterSecret, endpoint.id);
+    const secret = endpointSecret(endpoint.id);
 
     let body = payload;
     let timestamp = String(currentTime);
@@ -68,9 +80,11 @@ function testSenderRoutes({ store, now, masterSecret, toleranceSeconds, maxBodyB
   // POST /api/endpoints/:endpointId/test-webhooks
   // body: { "payload": "<exact webhook body>", "scenario": "valid" }
   //
-  // This route can make the server sign anything, so it is guarded:
+  // This route makes the server sign with an endpoint's secret, so it is guarded:
   //   - off unless WEBHOOK_TEST_SENDER_ENABLED=true
-  //   - only callable from this machine (loopback)
+  //   - only for endpoints in the caller's own workspace, whose secret the
+  //     caller already received, so it reveals nothing new
+  //   - rate limited per workspace
   //   - only accepts Content-Type: application/json, which browsers cannot send
   //     cross-site without a CORS preflight that this server never approves
   async function sendTestWebhook(req, res, [endpointId]) {
@@ -78,11 +92,11 @@ function testSenderRoutes({ store, now, masterSecret, toleranceSeconds, maxBodyB
       throw new HttpError(403, "TEST_SENDER_DISABLED", "Test webhooks are disabled. Set WEBHOOK_TEST_SENDER_ENABLED=true.");
     }
 
-    if (!LOOPBACK_ADDRESSES.includes(req.socket.remoteAddress)) {
-      throw new HttpError(403, "TEST_SENDER_LOCAL_ONLY", "Test webhooks can only be sent from this machine.");
-    }
+    // Only the caller's own endpoints can be signed for.
+    const workspace = sessions.find(req);
+    const endpoint = findOwnedEndpoint(store, workspace, endpointId);
 
-    const endpoint = findEndpoint(store, endpointId);
+    rateLimit("testWebhook", workspace.id);
 
     if (!isJsonContentType(req)) {
       throw new HttpError(415, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json.");
@@ -104,19 +118,28 @@ function testSenderRoutes({ store, now, masterSecret, toleranceSeconds, maxBodyB
 
     // Deliver through real HTTP to this same server, so the test webhook goes
     // through exactly the same route, size limit, verification, and recording.
-    let delivery;
-
-    try {
-      delivery = await fetch(`http://127.0.0.1:${req.socket.localPort}/api/webhooks/${endpoint.id}`, {
-        method: "POST",
-        headers: testRequest.headers,
-        body: testRequest.body,
-        signal: AbortSignal.timeout(5000),
-      });
-    } catch {
-      throw new HttpError(502, "TEST_DELIVERY_FAILED", "The test webhook could not be delivered to this server.");
+    async function deliver() {
+      try {
+        return await fetch(`http://127.0.0.1:${req.socket.localPort}/api/webhooks/${endpoint.id}`, {
+          method: "POST",
+          // Marks this as the server's own delivery, so it does not count against
+          // the per-IP limit that all users' test webhooks would otherwise share.
+          headers: { ...testRequest.headers, [internalDelivery.header]: internalDelivery.token },
+          body: testRequest.body,
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch {
+        throw new HttpError(502, "TEST_DELIVERY_FAILED", "The test webhook could not be delivered to this server.");
+      }
     }
 
+    // "replay" sends the identical signed request twice, like an attacker
+    // re-sending a captured webhook. The second delivery is the one reported.
+    if (scenario === "replay") {
+      await (await deliver()).arrayBuffer();
+    }
+
+    const delivery = await deliver();
     const responseBody = await delivery.json().catch(() => null);
 
     sendJson(res, 200, {

@@ -3,12 +3,14 @@
 
 // An error that should become a specific HTTP response, e.g.
 //   throw new HttpError(404, "ENDPOINT_NOT_FOUND", "Webhook endpoint was not found.");
+// `headers` are added to the response (e.g. Retry-After on a 429).
 // Anything thrown that is NOT an HttpError becomes a generic 500.
 class HttpError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, { headers = {} } = {}) {
     super(message);
     this.status = status;
     this.code = code;
+    this.headers = headers;
   }
 }
 

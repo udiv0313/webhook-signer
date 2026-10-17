@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveEndpointSecret } from "../../src/core/signature.js";
 import { MASTER_SECRET, NOW, TOLERANCE, createEndpoint, startServer } from "../helpers.js";
 
 // POST /api/endpoints/:endpointId/test-webhooks
@@ -14,15 +13,15 @@ let endpoint;
 
 test.beforeEach(async () => {
   app = await startServer({ testSenderEnabled: true });
-  endpoint = await createEndpoint(app.baseUrl);
+  endpoint = await createEndpoint(app);
 });
 
 test.afterEach(() => {
   app.close();
 });
 
-function sendTest(body, { endpointId = endpoint.id, contentType = "application/json", baseUrl = app.baseUrl } = {}) {
-  return fetch(`${baseUrl}/api/endpoints/${endpointId}/test-webhooks`, {
+function sendTest(body, { endpointId = endpoint.id, contentType = "application/json", client = app } = {}) {
+  return client.fetch(`/api/endpoints/${endpointId}/test-webhooks`, {
     method: "POST",
     headers: { "Content-Type": contentType },
     body: typeof body === "string" ? body : JSON.stringify(body),
@@ -30,7 +29,7 @@ function sendTest(body, { endpointId = endpoint.id, contentType = "application/j
 }
 
 async function getEvent(eventId) {
-  return (await fetch(`${app.baseUrl}/api/events/${eventId}`)).json();
+  return (await app.fetch(`/api/events/${eventId}`)).json();
 }
 
 // --- Scenarios go through the real verification --------------------------------
@@ -100,10 +99,9 @@ test("expired_timestamp is outside the tolerance; malformed_timestamp is in mill
 test("the response never contains a secret or a full signature", async () => {
   const res = await sendTest({ payload: PAYLOAD, scenario: "valid" });
   const text = await res.text();
-  const endpointSecret = deriveEndpointSecret(MASTER_SECRET, endpoint.id);
 
   assert.ok(!text.includes(MASTER_SECRET));
-  assert.ok(!text.includes(endpointSecret.toString("hex")));
+  assert.ok(!text.includes(endpoint.secret));
   assert.ok(!/sha256=[0-9a-f]{64}/.test(text));
 });
 
@@ -113,8 +111,8 @@ test("disabled by default → 403 TEST_SENDER_DISABLED", async () => {
   const locked = await startServer();
 
   try {
-    const lockedEndpoint = await createEndpoint(locked.baseUrl);
-    const res = await sendTest({ payload: PAYLOAD }, { baseUrl: locked.baseUrl, endpointId: lockedEndpoint.id });
+    const lockedEndpoint = await createEndpoint(locked);
+    const res = await sendTest({ payload: PAYLOAD }, { client: locked, endpointId: lockedEndpoint.id });
 
     assert.equal(res.status, 403);
     assert.equal((await res.json()).error.code, "TEST_SENDER_DISABLED");

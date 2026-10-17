@@ -3,10 +3,11 @@
 
 const HINTS = {
   NETWORK_ERROR: "Start the backend in another terminal with: npm start",
-  ENDPOINT_NOT_FOUND: "Endpoints are stored in memory, so they disappear when the backend restarts. Create it again.",
-  EVENT_NOT_FOUND: "Only the 100 most recent events are kept, and all events are cleared when the backend restarts.",
+  ENDPOINT_NOT_FOUND: "Endpoints belong to the browser that created them and are deleted after 72 hours. Create it again.",
+  EVENT_NOT_FOUND: "Only the 50 newest events per endpoint are kept, and events belong to the browser that created the endpoint.",
   TEST_SENDER_DISABLED: "Set WEBHOOK_TEST_SENDER_ENABLED=true in the backend's .env file and restart the backend.",
-  TEST_SENDER_LOCAL_ONLY: "Open the UI on the same machine as the backend.",
+  RATE_LIMITED: "Too many requests from this browser or network. Wait for the time shown above, then try again.",
+  ENDPOINT_LIMIT_REACHED: "This browser's workspace has reached its endpoint limit. Use an existing endpoint instead.",
 };
 
 export default function ErrorMessage({ error, title = "Request failed", onRetry }) {

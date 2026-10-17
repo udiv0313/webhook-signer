@@ -10,7 +10,10 @@ export default function App() {
 
   const showDashboard = () => setView({ page: "dashboard" });
   const showCreate = () => setView({ page: "create" });
-  const showEndpoint = (endpointId) => setView({ page: "endpoint", endpointId });
+  // `demo` is set only right after "Start the guided demo": it carries the new
+  // endpoint's secret to that one page, and is dropped when you navigate away.
+  const showEndpoint = (endpointId, demo = null) => setView({ page: "endpoint", endpointId, demo });
+  const startDemo = (endpoint) => showEndpoint(endpoint.id, { secret: endpoint.secret });
 
   return (
     <div className="app">
@@ -42,15 +45,17 @@ export default function App() {
       </header>
 
       <main className="app-main">
-        {view.page === "dashboard" && <DashboardPage onOpenEndpoint={showEndpoint} onCreateEndpoint={showCreate} />}
+        {view.page === "dashboard" && (
+          <DashboardPage onOpenEndpoint={showEndpoint} onCreateEndpoint={showCreate} onStartDemo={startDemo} />
+        )}
         {view.page === "create" && <CreateEndpointPage onOpenEndpoint={showEndpoint} onCancel={showDashboard} />}
         {view.page === "endpoint" && (
-          <EndpointPage key={view.endpointId} endpointId={view.endpointId} onBack={showDashboard} />
+          <EndpointPage key={view.endpointId} endpointId={view.endpointId} demo={view.demo} onBack={showDashboard} />
         )}
       </main>
 
       <footer className="app-footer small muted">
-        Prototype: endpoints and events are stored in memory and are cleared when the backend restarts.
+        Prototype: your endpoints and events belong to this browser and are deleted after 72 hours.
       </footer>
     </div>
   );

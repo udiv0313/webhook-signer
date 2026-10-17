@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import {
   createSignedMessage,
-  deriveEndpointSecret,
   parseTimestamp,
   safeEqual,
+  signatureFingerprint,
   signPayload,
   verifyWebhook,
 } from "../../src/core/signature.js";
@@ -30,23 +30,6 @@ function verify({ timestamp = NOW, body = BODY, ...overrides } = {}) {
     ...overrides,
   });
 }
-
-// --- Per-endpoint secrets ----------------------------------------------------
-
-test("deriveEndpointSecret gives the same 32-byte secret every time for the same inputs", () => {
-  const first = deriveEndpointSecret("master", "ep_0123456789abcdef");
-  const second = deriveEndpointSecret("master", "ep_0123456789abcdef");
-
-  assert.equal(first.length, 32);
-  assert.deepEqual(first, second);
-});
-
-test("deriveEndpointSecret gives different secrets for different endpoints or master secrets", () => {
-  const base = deriveEndpointSecret("master", "ep_0123456789abcdef");
-
-  assert.notDeepEqual(base, deriveEndpointSecret("master", "ep_fedcba9876543210"));
-  assert.notDeepEqual(base, deriveEndpointSecret("other-master", "ep_0123456789abcdef"));
-});
 
 // --- Signing format ----------------------------------------------------------
 
@@ -170,4 +153,16 @@ test("checks run in order: format, then freshness, then signature", () => {
 test("safeEqual returns false (and does not throw) for buffers of different lengths", () => {
   assert.equal(safeEqual(Buffer.alloc(32), Buffer.alloc(31)), false);
   assert.equal(safeEqual(Buffer.alloc(32), Buffer.alloc(32)), true);
+});
+
+// --- Replay fingerprints -------------------------------------------------------
+
+test("signatureFingerprint ignores hex case and never contains the signature", () => {
+  const header = signPayload(SECRET, NOW, BODY);
+  const upper = "sha256=" + header.slice("sha256=".length).toUpperCase();
+
+  assert.match(signatureFingerprint(header), /^[0-9a-f]{64}$/);
+  assert.equal(signatureFingerprint(header), signatureFingerprint(upper));
+  assert.notEqual(signatureFingerprint(header), header.slice("sha256=".length));
+  assert.notEqual(signatureFingerprint(header), signatureFingerprint(signPayload(SECRET, NOW + 1, BODY)));
 });

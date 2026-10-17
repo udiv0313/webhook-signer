@@ -16,6 +16,7 @@
   --fail: #c4322b;
   --fail-bg: #fbeceb;
   --warn: #9a6700;
+  --warn-bg: #fff8e1;
   --neutral-bg: #eef0f3;
   --code-bg: #f3f4f6;
   --focus: #2f5bd3;
@@ -41,6 +42,7 @@
     --fail: #ff7b72;
     --fail-bg: #2f1716;
     --warn: #e3b341;
+    --warn-bg: #2b2412;
     --neutral-bg: #232932;
     --code-bg: #12161b;
     --focus: #8ea8ff;
@@ -419,6 +421,109 @@ form .button-primary {
 .alert-pass {
   border-left-color: var(--pass);
   background: var(--pass-bg);
+}
+
+.alert-warning {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+
+/* --- Signing secret (shown once) ------------------------------------------ */
+
+.secret-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.secret-value {
+  flex: 1 1 20rem;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+  user-select: all; /* one click selects the whole secret */
+}
+
+.rotated-secret {
+  margin-bottom: 1rem;
+}
+
+.rotated-secret .button {
+  margin-top: 0.5rem;
+}
+
+/* --- Try it / guided demo -------------------------------------------------- */
+
+.try-it {
+  margin-bottom: 1.25rem;
+  border-left: 4px solid var(--accent);
+}
+
+.try-it-steps,
+.demo-steps {
+  margin: 0.5rem 0 1rem;
+  padding-left: 1.25rem;
+}
+
+.demo-guide {
+  margin-bottom: 1.25rem;
+  border-left: 4px solid var(--accent);
+}
+
+.demo-steps {
+  list-style: none;
+  padding-left: 0;
+}
+
+.demo-step {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.demo-step-title {
+  font-weight: 600;
+  margin-bottom: 0.15rem;
+}
+
+.demo-step-done .demo-step-title {
+  color: var(--pass);
+}
+
+.demo-step .button {
+  flex-shrink: 0;
+}
+
+.demo-secret {
+  margin-bottom: 0.5rem;
+}
+
+.card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.live-indicator {
+  white-space: nowrap;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  font-weight: 400;
 }
 
 /* --- Table ----------------------------------------------------------------- */

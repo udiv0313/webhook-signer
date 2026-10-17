@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { sendTestWebhook } from "../services/api.js";
 import { webhookUrl } from "../config.js";
+import { signAndSendCommands } from "../terminal.js";
 import ErrorMessage from "./ErrorMessage.jsx";
 import { HttpStatusBadge } from "./StatusBadge.jsx";
+
+// "Send test webhook": the backend signs the payload (optionally broken on
+// purpose for a failure scenario) and delivers it to the real webhook URL.
+// Also shows equivalent openssl + curl commands for a terminal.
 
 const DEFAULT_PAYLOAD = `{
   "event": "payment.success",
@@ -10,7 +15,8 @@ const DEFAULT_PAYLOAD = `{
   "amount": 4999
 }`;
 
-// Each scenario is built and signed by the backend; the browser never sees a secret.
+// Each scenario is built and signed by the backend with the endpoint's secret;
+// the tester never needs it.
 const SCENARIOS = [
   { value: "valid", label: "Valid webhook", expected: "200 accepted" },
   { value: "invalid_signature", label: "Signed with the wrong secret", expected: "401 INVALID_SIGNATURE" },
@@ -18,12 +24,8 @@ const SCENARIOS = [
   { value: "expired_timestamp", label: "Expired timestamp (looks like a replay)", expected: "401 TIMESTAMP_TOO_OLD" },
   { value: "missing_signature", label: "Missing signature header", expected: "401 MISSING_SIGNATURE" },
   { value: "malformed_timestamp", label: "Timestamp in milliseconds", expected: "400 MALFORMED_TIMESTAMP" },
+  { value: "replay", label: "Same request sent twice (replay)", expected: "409 REPLAY_DETECTED" },
 ];
-
-// Wrap text in single quotes for a shell command, escaping any single quotes inside.
-function shellQuote(text) {
-  return `'${text.replaceAll("'", `'\\''`)}'`;
-}
 
 function isValidJson(text) {
   try {
@@ -34,7 +36,9 @@ function isValidJson(text) {
   }
 }
 
-export default function WebhookTester({ endpoint, onSent }) {
+// `secret` is only known right after the endpoint was created (guided demo);
+// otherwise the terminal commands show a placeholder to replace.
+export default function WebhookTester({ endpoint, secret, onSent }) {
   const [payload, setPayload] = useState(DEFAULT_PAYLOAD);
   const [scenario, setScenario] = useState("valid");
   const [sending, setSending] = useState(false);
@@ -60,11 +64,7 @@ export default function WebhookTester({ endpoint, onSent }) {
     }
   }
 
-  const terminalCommands = [
-    `BODY=${shellQuote(payload)}`,
-    `node --env-file=.env src/cli/sign.js --endpoint=${endpoint.id} "$BODY" > /tmp/webhook-headers.txt`,
-    `curl -i -X POST ${webhookUrl(endpoint.webhookPath)} \\\n  -H "Content-Type: application/json" \\\n  -H @/tmp/webhook-headers.txt \\\n  --data-binary "$BODY"`,
-  ].join("\n");
+  const terminalCommands = signAndSendCommands({ url: webhookUrl(endpoint.webhookPath), payload, secret });
 
   return (
     <section className="card" aria-labelledby="tester-title">
@@ -125,10 +125,16 @@ export default function WebhookTester({ endpoint, onSent }) {
 
       <details className="terminal">
         <summary>Send the same payload from your terminal</summary>
-        <p className="small muted">
-          Run from the project folder. The CLI reads WEBHOOK_SECRET from .env on your machine; it is never in the
-          browser.
-        </p>
+        {secret ? (
+          <p className="small muted">Needs only openssl and curl. This endpoint's signing secret is already filled in.</p>
+        ) : (
+          <p className="small muted">
+            Needs only openssl and curl. <strong>First replace whsec_... with this endpoint's signing secret</strong>{" "}
+            (shown once, when the endpoint was created; lost it? Rotate the secret above). Pasted unchanged, the
+            commands stop and tell you so. In this project you can also sign with the CLI:
+            WEBHOOK_ENDPOINT_SECRET=... node src/cli/sign.js.
+          </p>
+        )}
         <pre className="code-block">{terminalCommands}</pre>
       </details>
     </section>

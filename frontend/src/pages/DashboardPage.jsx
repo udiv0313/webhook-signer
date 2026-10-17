@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { getEndpoints } from "../services/api.js";
 import { webhookUrl } from "../config.js";
 import ErrorMessage from "../components/ErrorMessage.jsx";
+import TryItPanel from "../components/TryItPanel.jsx";
 import { EndpointStatus } from "../components/StatusBadge.jsx";
 
-export default function DashboardPage({ onOpenEndpoint, onCreateEndpoint }) {
+// Home page: the "Try it in 60 seconds" demo and this workspace's endpoints.
+export default function DashboardPage({ onOpenEndpoint, onCreateEndpoint, onStartDemo }) {
   const [endpoints, setEndpoints] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -47,6 +49,8 @@ export default function DashboardPage({ onOpenEndpoint, onCreateEndpoint }) {
         </div>
       </div>
 
+      <TryItPanel onStarted={onStartDemo} />
+
       {error && <ErrorMessage error={error} title="Could not load endpoints" onRetry={reload} />}
 
       {loading && endpoints === null && (
@@ -59,8 +63,8 @@ export default function DashboardPage({ onOpenEndpoint, onCreateEndpoint }) {
         <div className="card empty-state">
           <p className="empty-title">No endpoints yet</p>
           <p className="muted">
-            Create an endpoint to get a webhook URL. Endpoints are kept in memory, so restarting the backend clears
-            them.
+            Create an endpoint to get a webhook URL. Endpoints belong to this browser and are deleted after 72
+            hours.
           </p>
           <button type="button" className="button button-primary" onClick={onCreateEndpoint}>
             + Create endpoint

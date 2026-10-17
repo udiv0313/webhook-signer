@@ -15,20 +15,6 @@ const SIGNATURE_PATTERN = /^sha256=([0-9a-fA-F]{64})$/;
 const TIMESTAMP_PATTERN = /^[0-9]{1,10}$/;
 
 /**
- * Derive one endpoint's signing secret from the master secret (WEBHOOK_SECRET).
- *
- * HKDF is a standard way to turn one master key into many independent keys.
- * Different endpoint IDs give unrelated secrets, and nobody can work backwards
- * from an endpoint secret to the master secret. Because the secret can always
- * be derived again, it never needs to be stored or returned by the API.
- */
-function deriveEndpointSecret(masterSecret, endpointId) {
-  const keyBytes = crypto.hkdfSync("sha256", masterSecret, "", `webhook-signer:endpoint:${endpointId}`, 32);
-
-  return Buffer.from(keyBytes);
-}
-
-/**
  * Build the exact bytes that get signed:  <timestamp>.<raw body>
  * Example: 1712345678.{"event":"payment.success"}
  *
@@ -98,7 +84,7 @@ function safeEqual(a, b) {
 /**
  * Check that a webhook is well-formed, fresh, and authentic.
  *
- *   secret            the endpoint's HMAC secret (see deriveEndpointSecret)
+ *   secret            the endpoint's HMAC secret (whsec_..., see core/secrets.js)
  *   rawBody          the request body exactly as received (Buffer or string)
  *   timestampHeader   value of X-Webhook-Timestamp (or undefined)
  *   signatureHeader   value of X-Webhook-Signature (or undefined)
@@ -162,14 +148,23 @@ function rejected(status, code, reason) {
   return { valid: false, status, code, reason };
 }
 
+/**
+ * A fingerprint of a valid signature header, for replay detection: the sha256
+ * of the 32 signature bytes, so "sha256=AB…" and "sha256=ab…" match. Only this
+ * hash is stored, never the signature itself.
+ */
+function signatureFingerprint(headerValue) {
+  return crypto.createHash("sha256").update(parseSignatureHeader(headerValue)).digest("hex");
+}
+
 export {
   TIMESTAMP_HEADER,
   SIGNATURE_HEADER,
-  deriveEndpointSecret,
   createSignedMessage,
   signPayload,
   parseTimestamp,
   parseSignatureHeader,
   safeEqual,
+  signatureFingerprint,
   verifyWebhook,
 };
