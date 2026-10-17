@@ -1,0 +1,40 @@
+# Never send secrets or local data into the image build.
+.env
+.env.*
+!.env.example
+frontend/.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+credentials*.json
+secrets/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Rebuilt inside the image.
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.vite/
+
+# Not needed in the image.
+.git/
+.gitignore
+.vscode/
+.idea/
+tests/
+docs/
+coverage/
+logs/
+*.log
+.DS_Store
+fly.toml
+Dockerfile
+.dockerignore

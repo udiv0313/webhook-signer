@@ -1,0 +1,42 @@
+# Fly.io configuration. Change `app` to a unique name, then follow
+# docs/deploy.md. WEBHOOK_SECRET is set with `fly secrets set`, never here.
+
+app = "webhook-signer-change-me"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  DATABASE_PATH = "/data/webhook-signer.db"
+  # Fly serves HTTPS, so the workspace cookie can be Secure (and HSTS is sent).
+  COOKIE_SECURE = "true"
+  # Requests arrive through Fly's proxy, which adds the client IP to X-Forwarded-For.
+  TRUST_PROXY = "true"
+  WEBHOOK_TEST_SENDER_ENABLED = "true"
+
+# SQLite needs a persistent disk. Create it once: see docs/deploy.md.
+[[mounts]]
+  source = "webhook_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # Stop when idle, start on the next request (cheap for a demo).
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"
