@@ -27,6 +27,21 @@ function readPositiveInteger(name, defaultValue) {
   return Number(text);
 }
 
+// TRUST_PROXY: "false" (or unset) → 0, "true" → 1, or a number of proxies.
+function readTrustProxy() {
+  const text = (process.env.TRUST_PROXY || "false").trim();
+
+  if (text === "false") return 0;
+  if (text === "true") return 1;
+
+  if (!/^[0-9]$/.test(text)) {
+    console.error(`TRUST_PROXY must be true, false, or the number of proxies in front of the server (got "${text}").`);
+    process.exit(1);
+  }
+
+  return Number(text);
+}
+
 // Returns the server settings, or exits the process if any of them are invalid.
 function loadConfig() {
   const masterSecret = process.env.WEBHOOK_SECRET;
@@ -47,7 +62,7 @@ function loadConfig() {
     maxEventsPerEndpoint: readPositiveInteger("WEBHOOK_MAX_EVENTS_PER_ENDPOINT", DEFAULT_MAX_EVENTS_PER_ENDPOINT),
     maxEndpointsPerWorkspace: readPositiveInteger("WORKSPACE_MAX_ENDPOINTS", DEFAULT_MAX_ENDPOINTS_PER_WORKSPACE),
     cookieSecure: process.env.COOKIE_SECURE === "true",
-    trustProxy: process.env.TRUST_PROXY === "true",
+    trustProxy: readTrustProxy(),
     staticDir: process.env.FRONTEND_DIST || DEFAULT_FRONTEND_DIST,
   };
 }

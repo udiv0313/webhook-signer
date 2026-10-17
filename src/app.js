@@ -57,7 +57,8 @@ function requirePositiveInteger(name, value) {
 //   maxEndpointsPerWorkspace endpoints one workspace may have
 //   workspaceTtlSeconds      how long a workspace (and its data) lives after creation
 //   cookieSecure             add the Secure flag to the workspace cookie (HTTPS only)
-//   trustProxy               take the client IP from X-Forwarded-For (behind one proxy)
+//   trustProxy               proxies in front of the server (true = 1); the client IP
+//                            is then taken from X-Forwarded-For (see http/rate-limit.js)
 //   rateLimits               overrides for DEFAULT_RATE_LIMITS, per bucket
 //   staticDir                built frontend to serve (frontend/dist); null serves only the API
 //

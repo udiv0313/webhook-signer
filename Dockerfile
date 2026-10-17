@@ -37,7 +37,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
     && mkdir -p /data \
     && chown node:node /data
 
-VOLUME ["/data"]
+# Mount a persistent volume at /data to keep the database (docker run -v ...).
 EXPOSE 3000
 
 # The slim image has no curl, so the check uses Node's built-in fetch.

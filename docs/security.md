@@ -122,9 +122,11 @@ In-memory fixed windows, answering `429` with `Retry-After`:
 
 - Webhooks over the limit are refused before the body is read and are not
   stored, so a flood costs neither memory nor disk.
-- **Client IP behind a proxy.** Every request then comes from the proxy, so
-  `TRUST_PROXY=true` takes the last `X-Forwarded-For` entry (the address the
-  proxy saw). Leave it off without a proxy: clients could send any value.
+- **Client IP behind proxies.** Every request then comes from a proxy, so
+  `TRUST_PROXY=<number of proxies>` takes the `X-Forwarded-For` entry that the
+  outermost proxy added (the Nth from the end); entries before it are sent by
+  the client and ignored. Leave it off without a proxy: clients could send any
+  value.
 - The test sender delivers to its own webhook route from the server's own
   address. Those deliveries carry a random per-process token, so they do not
   use up one shared per-IP budget for all users.

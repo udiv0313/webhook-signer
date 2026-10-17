@@ -62,3 +62,19 @@ test("clientIp uses the connection unless trustProxy is on", () => {
   assert.equal(clientIp(req, true), "198.51.100.7");
   assert.equal(clientIp({ ...req, headers: {} }, true), "10.0.0.1");
 });
+
+test("clientIp with N proxies takes the Nth entry from the end (e.g. Render: 2)", () => {
+  // The client sent a fake first entry; proxy 1 appended the real client
+  // (203.0.113.9); proxy 2 appended proxy 1's address (198.51.100.7).
+  const req = {
+    socket: { remoteAddress: "10.0.0.1" },
+    headers: { "x-forwarded-for": "6.6.6.6, 203.0.113.9, 198.51.100.7" },
+  };
+
+  assert.equal(clientIp(req, 1), "198.51.100.7");
+  assert.equal(clientIp(req, 2), "203.0.113.9");
+  assert.equal(clientIp(req, 0), "10.0.0.1");
+
+  // Fewer entries than proxies: the header is not trustworthy, use the connection.
+  assert.equal(clientIp({ ...req, headers: { "x-forwarded-for": "203.0.113.9" } }, 2), "10.0.0.1");
+});

@@ -49,16 +49,25 @@ function createRateLimiter({ now }) {
   };
 }
 
-// The client's IP address. Behind a reverse proxy every request comes from the
-// proxy, so with trustProxy the address the proxy appended to X-Forwarded-For
-// (the last entry) is used instead. Only enable trustProxy behind exactly one
-// proxy that sets this header: otherwise clients can put any value there.
+// The client's IP address. Behind reverse proxies every request comes from a
+// proxy, so the client address is taken from X-Forwarded-For instead.
+//
+// trustProxy is how many proxies sit in front of the server (true means 1).
+// Each proxy appends the address it received the request from, so with N
+// proxies the client is the Nth entry from the end. Entries before that were
+// sent by the client itself and could be anything, so they are never used.
+//   Fly.io, nginx, Caddy: 1        Render (Cloudflare + Render proxy): 2
 function clientIp(req, trustProxy) {
-  if (trustProxy) {
-    const forwarded = req.headers["x-forwarded-for"];
+  const hops = trustProxy === true ? 1 : Number(trustProxy) || 0;
+  const forwarded = req.headers["x-forwarded-for"];
 
-    if (typeof forwarded === "string" && forwarded.trim() !== "") {
-      return forwarded.split(",").at(-1).trim();
+  if (hops > 0 && typeof forwarded === "string") {
+    const entries = forwarded.split(",").map((entry) => entry.trim()).filter((entry) => entry !== "");
+
+    // Fewer entries than proxies means the header did not come through the
+    // expected proxies; fall back to the connection rather than trust it.
+    if (entries.length >= hops) {
+      return entries[entries.length - hops];
     }
   }
 

@@ -70,7 +70,32 @@ Open `https://<your-app-name>.fly.dev` and click **Start the guided demo**.
 | `auto_stop_machines` | Stops when idle, starts on the next request (a few seconds). Rate-limit counters reset then; data does not |
 | health check on `/health` | Fly restarts the machine if the database stops responding |
 
-## 3. Any other Docker host
+## 3. Deploy to Render (free)
+
+Free plan: no card, HTTPS included, deploys from GitHub. Limits: the service
+sleeps after 15 minutes without traffic (the next visit takes about a minute),
+and **free services have no persistent disk**, so the database starts empty
+after every deploy or restart.
+
+1. Sign up at render.com with GitHub.
+2. **New → Web Service** → connect this repository → branch `main`.
+   Render detects the Dockerfile (runtime: Docker).
+3. **Instance type: Free.**
+4. Environment variables:
+
+   | Name | Value |
+   | --- | --- |
+   | `WEBHOOK_SECRET` | output of `openssl rand -hex 32` |
+   | `COOKIE_SECURE` | `true` |
+   | `TRUST_PROXY` | `2` (Cloudflare + Render's proxy) |
+   | `WEBHOOK_TEST_SENDER_ENABLED` | `true` |
+
+5. **Advanced → Health Check Path:** `/health`. Create the service.
+
+Render sets `PORT` itself. Optional: a free uptime monitor calling `/health`
+every 10 minutes keeps the service awake (and its data, until the next deploy).
+
+## 4. Any other Docker host
 
 The image needs one environment variable and one volume:
 

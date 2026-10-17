@@ -279,6 +279,7 @@ test("server process exits with an error for bad configuration", () => {
     [{ WEBHOOK_SECRET: MASTER_SECRET, WEBHOOK_TOLERANCE_SECONDS: "five minutes" }, /WEBHOOK_TOLERANCE_SECONDS/],
     [{ WEBHOOK_SECRET: MASTER_SECRET, WEBHOOK_TOLERANCE_SECONDS: "0" }, /WEBHOOK_TOLERANCE_SECONDS/],
     [{ WEBHOOK_SECRET: MASTER_SECRET, WEBHOOK_MAX_BODY_SIZE: "1MB" }, /WEBHOOK_MAX_BODY_SIZE/],
+    [{ WEBHOOK_SECRET: MASTER_SECRET, TRUST_PROXY: "yes" }, /TRUST_PROXY/],
   ];
 
   for (const [env, expectedError] of badConfigs) {

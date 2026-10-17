@@ -18,7 +18,11 @@ server.listen(port, () => {
   console.log(`Storage: SQLite at ${options.databasePath}`);
   console.log(`Workspaces expire after ${options.workspaceTtlSeconds / 3600} hours; ${options.maxEventsPerEndpoint} events kept per endpoint`);
   console.log(`Workspace cookie: ${options.cookieSecure ? "Secure (HTTPS only)" : "not Secure (fine for local http)"}`);
-  console.log(`Client IP: ${options.trustProxy ? "from X-Forwarded-For (behind a proxy)" : "from the connection"}`);
+  console.log(
+    options.trustProxy > 0
+      ? `Client IP: from X-Forwarded-For (behind ${options.trustProxy} ${options.trustProxy === 1 ? "proxy" : "proxies"})`
+      : "Client IP: from the connection",
+  );
   console.log(
     server.staticFileCount > 0
       ? `Web app: serving ${options.staticDir} (${server.staticFileCount} files)`

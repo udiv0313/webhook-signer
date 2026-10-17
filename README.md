@@ -110,7 +110,7 @@ Defaults and explanations are in [`.env.example`](.env.example). Never commit
 | `WORKSPACE_MAX_ENDPOINTS` | Endpoints allowed per workspace |
 | `WEBHOOK_TEST_SENDER_ENABLED` | Enables the UI's test sender |
 | `COOKIE_SECURE` | Marks the workspace cookie `Secure` and sends HSTS (HTTPS only) |
-| `TRUST_PROXY` | Takes the client IP from `X-Forwarded-For` (behind one proxy only) |
+| `TRUST_PROXY` | Number of reverse proxies in front (`true` = 1; Render needs `2`), so the client IP comes from `X-Forwarded-For` |
 | `FRONTEND_DIST` | Folder of the built web app to serve |
 
 Frontend (optional, `frontend/.env`): `VITE_WEBHOOK_BASE_URL` (public, display
@@ -145,7 +145,8 @@ exposes only port 3000, and has a `HEALTHCHECK` on `GET /health`. Keep the same
 ## Deployment
 
 One process, one persistent volume for SQLite, HTTPS in front. Behind HTTPS set
-`COOKIE_SECURE=true`; behind one reverse proxy set `TRUST_PROXY=true`. Run
+`COOKIE_SECURE=true`; behind reverse proxies set `TRUST_PROXY` to their number
+(`true` for one, `2` on Render). Run
 exactly one instance (SQLite and the in-memory rate limits are per process).
 Step-by-step guide (Fly.io config included): [docs/deploy.md](docs/deploy.md).
 
