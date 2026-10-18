@@ -82,7 +82,7 @@ endpoints per workspace.
   "createdAt": "2026-10-11T10:21:24.000Z",
   "webhookPath": "/api/webhooks/ep_85a64db45372ea34",
   "recentEventCount": 0,
-  "secret": "whsec_EXAMPLE000000000000000000000000000000000000"
+  "secret": "whsec_<43 random characters, shown only in this response>"
 }
 ```
 
@@ -317,7 +317,7 @@ limited to 10 per hour per workspace.
 **Success: `200 OK`**
 
 ```json
-{ "secret": "whsec_EXAMPLE000000000000000000000000000000000000" }
+{ "secret": "whsec_<43 random characters, shown only in this response>" }
 ```
 
 **Errors**
